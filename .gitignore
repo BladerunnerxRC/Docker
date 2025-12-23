@@ -1,0 +1,8 @@
+.env
+**/.env
+secrets/
+**/*secret*
+**/*token*
+**/*password*
+**/acme.json
+**/certs/
