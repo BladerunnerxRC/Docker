@@ -1,0 +1,57 @@
+http:
+  services:
+    dockhand:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.98:3333"
+
+    grafana:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.98:3000"
+
+    haos:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.13:8123"
+
+    komga:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.98:25600"
+
+    manyfold3d:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.98:3214"
+
+    portainer:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.98:9000"
+
+    porttracker:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.98:4999"
+
+    webmin-mid:
+      loadBalancer:
+        passHostHeader: false
+        serversTransport: webmin-insecure
+        servers:
+          - url: "https://192.168.200.52:10000"
+
+    webmin-opti:
+      loadBalancer:
+        passHostHeader: false
+        serversTransport: webmin-insecure
+        servers:
+          - url: "https://192.168.200.98:10000"
