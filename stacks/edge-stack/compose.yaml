@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: traefik:v3.1
+    image: traefik:latest
     container_name: traefik
     restart: unless-stopped
     security_opt:
@@ -8,23 +8,26 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "8082:8082"
     networks:
       - edge
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ./traefik/dynamic:/etc/traefik/dynamic:ro
-      - /opt/stacks/edge-stack/traefik:/var/lib/traefik
+      - ${TRAEFIK_DYNAMIC}:/etc/traefik/dynamic:ro
+      - ${TRAEFIK_CERTS}:/etc/traefik/certs:ro
+      - ${TRAEFIK_ACME}:/etc/traefik/acme:rw
+      - ${TRAEFIK_STEPCA}:/etc/traefik/stepca:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik.rule=Host(`traefik.${BASE_DOMAIN}`)"
       - "traefik.http.routers.traefik.entrypoints=websecure"
       - "traefik.http.routers.traefik.tls=true"
+      - "traefik.http.routers.traefik.tls.certresolver=${CERTRESOLVER}"
       - "traefik.http.routers.traefik.service=api@internal"
 
-  adguard:
+  adguardhome:
     image: adguard/adguardhome:latest
-    container_name: adguard
+    container_name: adguardhome
     restart: unless-stopped
     networks:
       - edge
@@ -33,13 +36,14 @@ services:
       - "53:53/udp"
       - "3000:3000/tcp"
     volumes:
-      - /opt/stacks/edge-stack/adguard/work:/opt/adguardhome/work
-      - /opt/stacks/edge-stack/adguard/conf:/opt/adguardhome/conf
+      - ${ADGUARD_CONF}:/opt/adguardhome/conf:rw
+      - ${ADGUARD_WORK}:/opt/adguardhome/work:rw
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.adguard.rule=Host(`adguard.${BASE_DOMAIN}`)"
       - "traefik.http.routers.adguard.entrypoints=websecure"
       - "traefik.http.routers.adguard.tls=true"
+      - "traefik.http.routers.adguard.tls.certresolver=${CERTRESOLVER}"
       - "traefik.http.services.adguard.loadbalancer.server.port=80"
 
   whoami:
@@ -53,6 +57,7 @@ services:
       - "traefik.http.routers.whoami.rule=Host(`whoami.${BASE_DOMAIN}`)"
       - "traefik.http.routers.whoami.entrypoints=websecure"
       - "traefik.http.routers.whoami.tls=true"
+      - "traefik.http.routers.whoami.tls.certresolver=${CERTRESOLVER}"
 
 networks:
   edge:
