@@ -1,0 +1,4 @@
+http:
+  serversTransports:
+    webmin-insecure:
+      insecureSkipVerify: true
