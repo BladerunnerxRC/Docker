@@ -1,0 +1,73 @@
+http:
+  routers:
+    dockhand:
+      rule: "Host(`dockhand.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: dockhand
+
+    grafana:
+      rule: "Host(`grafana.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: grafana
+
+    haos:
+      rule: "Host(`haos.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: haos
+
+    komga:
+      rule: "Host(`komga.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: komga
+
+    manyfold3d:
+      rule: "Host(`manyfold3d.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: manyfold3d
+
+    portainer:
+      rule: "Host(`portainer.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: portainer
+
+    porttracker:
+      rule: "Host(`porttracker.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: porttracker
+
+    webmin-mid:
+      rule: "Host(`webmin-mid.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: webmin-mid
+
+    webmin-opti:
+      rule: "Host(`webmin-opti.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: webmin-opti
