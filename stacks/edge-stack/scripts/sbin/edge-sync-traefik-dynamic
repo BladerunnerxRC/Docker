@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+#------------------------------------------------------------------------------
+# edge-sync-traefik-dynamic
+#
+# Purpose:
+#   Pull + sync + validate + restart + verify Traefik dynamic (file provider).
+#
+# Logging:
+#   - Logs to console and to /var/log/edge-sync/edge-sync-traefik-dynamic.log
+#   - Each run also writes /var/log/edge-sync/edge-sync-traefik-dynamic-YYYYmmdd-HHMMSS.log
+#
+# Safety:
+#   - Repo working copy is treated as pull-only (hard reset to origin/main)
+#   - Always creates a timestamped backup tarball of live dynamic/ before rsync
+#   - YAML validation prevents bad config from causing a restart
+#------------------------------------------------------------------------------
+
+set -euo pipefail
+
+# ----------------------------- Configuration ---------------------------------
+GIT_USER="thomas"
+
+REPO="/opt/git/Docker"
+SRC="$REPO/stacks/edge-stack/traefik/dynamic"
+DST="/opt/netlab-stack/traefik/dynamic"
+BK="/opt/netlab-stack/traefik/backups"
+ARCH="/opt/netlab-stack/traefik/dynamic-archive"
+
+TRAEFIK_HOST="traefik.shome"
+TRAEFIK_URL="https://${TRAEFIK_HOST}"
+TRAEFIK_RESOLVE=(--resolve "${TRAEFIK_HOST}:443:127.0.0.1")
+
+WAIT_SECONDS=25
+DRY_RUN=0
+
+LOG_DIR="/var/log/edge-sync"
+LOG_BASE="${LOG_DIR}/edge-sync-traefik-dynamic"
+LOG_MAIN="${LOG_BASE}.log"
+LOG_RUN="${LOG_BASE}-$(date +%Y%m%d-%H%M%S).log"
+# -----------------------------------------------------------------------------
+
+# ------------------------------- Logging -------------------------------------
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+ts() { date '+%Y-%m-%d %H:%M:%S%z'; }
+log() { local lvl="$1"; shift; printf '%s [%s] %s\n' "$(ts)" "$lvl" "$*" | tee -a "$LOG_MAIN" >> "$LOG_RUN"; }
+info(){ log INFO "$@"; }
+warn(){ log WARN "$@"; }
+err(){ log ERROR "$@"; }
+
+die() { err "$*"; exit 1; }
+
+on_err() {
+  local code=$?
+  err "FAILED (exit=$code) at line ${BASH_LINENO[0]}: ${BASH_COMMAND}"
+  err "Tip: check logs: $LOG_RUN"
+  exit "$code"
+}
+trap on_err ERR
+
+START_EPOCH="$(date +%s)"
+info "==== START edge-sync-traefik-dynamic ===="
+info "run_log=$LOG_RUN"
+# -----------------------------------------------------------------------------
+
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency '$1'"; }
+
+usage() {
+  cat <<USAGE
+edge-sync-traefik-dynamic - pull + sync + validate + restart + verify Traefik dynamic config
+
+Usage:
+  sudo edge-sync-traefik-dynamic
+  sudo edge-sync-traefik-dynamic --dry-run
+  sudo edge-sync-traefik-dynamic --list-backups
+  sudo edge-sync-traefik-dynamic -h|--help
+
+Options:
+  --dry-run        Show what would change (rsync dry run). Does NOT restart Traefik.
+  --list-backups   List the most recent live dynamic backups created by this tool.
+  -h, --help       Show this help.
+
+Logs:
+  $LOG_MAIN
+  $LOG_RUN
+USAGE
+}
+
+list_backups() {
+  ls -1t "$BK"/dynamic-live-*.tgz 2>/dev/null | head -10 || true
+}
+
+# ------------------------------- Args ----------------------------------------
+case "${1:-}" in
+  -h|--help) usage; exit 0;;
+  --list-backups) list_backups; exit 0;;
+  --dry-run) DRY_RUN=1;;
+  "" ) ;;
+  * ) die "unknown option: ${1}";;
+esac
+# -----------------------------------------------------------------------------
+
+# ---------------------------- Dependencies -----------------------------------
+need git; need rsync; need jq; need curl; need docker; need tar; need python3
+# python3-yaml is checked during validation with a clear error message
+# -----------------------------------------------------------------------------
+
+info "[0/9] Ensure root trusts GitHub host key (non-interactive)"
+sudo mkdir -p /root/.ssh
+sudo ssh-keyscan github.com | sudo tee -a /root/.ssh/known_hosts >/dev/null
+
+info "[1/9] Sync repo clone to origin/main (git as $GIT_USER)"
+# Run git as the non-root user so deploy key works
+sudo -u "$GIT_USER" -H bash -lc "
+  set -euo pipefail
+  cd '$REPO'
+  git fetch origin
+  git reset --hard origin/main
+  git clean -fd
+" | tee -a "$LOG_MAIN" >> "$LOG_RUN"
+
+# Helpful metadata for audit trail
+GIT_HEAD="$(sudo -u "$GIT_USER" -H bash -lc "cd '$REPO' && git rev-parse --short HEAD")"
+GIT_MSG="$(sudo -u "$GIT_USER" -H bash -lc "cd '$REPO' && git log -1 --pretty=%s")"
+info "repo_head=${GIT_HEAD} msg='${GIT_MSG}'"
+
+info "[2/9] Sanity checks"
+[[ -d "$SRC" ]] || die "repo dynamic folder missing: $SRC"
+# Never allow backup/ to be synced into watched dir
+rm -rf "$SRC/backup" || true
+
+info "[3/9] Backup live dynamic folder"
+sudo mkdir -p "$BK"
+BK_FILE="$BK/dynamic-live-$(date +%F-%H%M%S).tgz"
+sudo tar -C /opt/netlab-stack/traefik -czf "$BK_FILE" dynamic
+info "backup_created=$BK_FILE"
+
+info "[4/9] Move live backup dir out of watched folder (if present)"
+if [[ -d "$DST/backup" ]]; then
+  sudo mkdir -p "$ARCH"
+  MOVED="$ARCH/backup-$(date +%F-%H%M%S)"
+  sudo mv "$DST/backup" "$MOVED"
+  warn "moved_live_backup_dir=$MOVED"
+else
+  info "no_live_backup_dir_found"
+fi
+
+info "[5/9] Rsync repo -> live (delete removed files)"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  warn "DRY RUN enabled: no changes will be applied; Traefik will NOT restart."
+  sudo rsync -a --delete --dry-run "$SRC/" "$DST/" | tee -a "$LOG_MAIN" >> "$LOG_RUN"
+  info "==== DONE (dry-run) ===="
+  exit 0
+fi
+
+# Capture rsync output for audit
+sudo rsync -a --delete "$SRC/" "$DST/" | tee -a "$LOG_MAIN" >> "$LOG_RUN"
+
+info "[6/9] Validate YAML in live dynamic folder (fail-safe)"
+python3 - <<'PY' | tee -a "/var/log/edge-sync/edge-sync-traefik-dynamic.log" >> "/var/log/edge-sync/edge-sync-traefik-dynamic-$(date +%Y%m%d-%H%M%S).log"
+import glob, sys
+try:
+    import yaml
+except Exception:
+    print("ERROR: PyYAML not installed. Install: sudo apt-get install -y python3-yaml", file=sys.stderr)
+    sys.exit(11)
+
+dst = "/opt/netlab-stack/traefik/dynamic"
+files = sorted(glob.glob(dst + "/**/*.yml", recursive=True) + glob.glob(dst + "/**/*.yaml", recursive=True))
+bad = []
+for f in files:
+    try:
+        with open(f, "r", encoding="utf-8") as fp:
+            yaml.safe_load(fp)
+    except Exception as e:
+        bad.append((f, str(e)))
+
+if bad:
+    print("YAML validation FAILED. Not restarting Traefik.", file=sys.stderr)
+    for f, e in bad:
+        print(f" - {f}: {e}", file=sys.stderr)
+    sys.exit(12)
+
+print(f"OK: parsed {len(files)} YAML files under {dst}")
+PY
+
+info "[7/9] Restart Traefik"
+docker restart traefik >/dev/null
+info "traefik_restarted"
+
+info "[8/9] Wait for Traefik API (up to ${WAIT_SECONDS}s)"
+for i in $(seq 1 "$WAIT_SECONDS"); do
+  if curl -kfsS --connect-timeout 1 "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/version" >/dev/null 2>&1; then
+    info "traefik_api_up_after=${i}s"
+    break
+  fi
+  sleep 1
+  if [[ "$i" -eq "$WAIT_SECONDS" ]]; then
+    err "Traefik API not reachable after ${WAIT_SECONDS}s. Dumping logs:"
+    docker logs --tail 200 traefik | tee -a "$LOG_MAIN" >> "$LOG_RUN" || true
+    exit 25
+  fi
+done
+
+info "[9/9] Verify file-provider routers + middlewares"
+info "-- File routers:"
+curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/routers" \
+| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' \
+| tee -a "$LOG_MAIN" >> "$LOG_RUN"
+
+info "-- File middlewares:"
+curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/middlewares" \
+| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' \
+| tee -a "$LOG_MAIN" >> "$LOG_RUN"
+
+info "-- Live dynamic dir:"
+sudo ls -la "$DST" | tee -a "$LOG_MAIN" >> "$LOG_RUN"
+
+END_EPOCH="$(date +%s)"
+DUR="$((END_EPOCH-START_EPOCH))"
+info "==== SUCCESS in ${DUR}s ===="
