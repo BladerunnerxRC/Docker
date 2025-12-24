@@ -19,3 +19,12 @@ providers:
   file:
     directory: /etc/traefik/dynamic
     watch: true
+
+certificatesResolvers:
+  stepca:
+    acme:
+      email: admin@shome
+      storage: /etc/traefik/acme/acme.json
+      caServer: https://stepca.shome:9000/acme/acme/directory
+      tlsChallenge: {}
+
