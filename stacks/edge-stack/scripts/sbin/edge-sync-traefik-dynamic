@@ -1,28 +1,24 @@
 #!/usr/bin/env bash
-#------------------------------------------------------------------------------
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
 # edge-sync-traefik-dynamic
 #
-# Purpose:
-#   Pull + sync + validate + restart + verify Traefik dynamic (file provider).
-#
-# Key behavior:
-#   - Pull-only server: hard resets repo to origin/main as user "thomas"
-#   - Backs up live dynamic folder to /opt/netlab-stack/traefik/backups
-#   - Rsync repo dynamic -> live dynamic (deletes removed files)
-#   - Validates YAML (requires python3-yaml)
-#   - Restarts Traefik container
-#   - Waits for Traefik API
-#   - Prints file-provider routers + middlewares + live dir listing
-#
+# Output:
+#   Clean step output on screen (==[x/8] ...==)
 # Logging:
-#   - Console + /var/log/edge-sync/edge-sync-traefik-dynamic.log
-#   - Per-run log: /var/log/edge-sync/edge-sync-traefik-dynamic-YYYYmmdd-HHMMSS.log
+#   - Main log: /var/log/edge-sync/edge-sync-traefik-dynamic.log
+#   - Per-run:   /var/log/edge-sync/edge-sync-traefik-dynamic-YYYYmmdd-HHMMSS.log
 #
-# IMPORTANT:
-#   This script uses a global exec+tee redirect so ALL stdout/stderr from commands
-#   are captured into BOTH logs and shown on screen.
-#------------------------------------------------------------------------------
-set -euo pipefail
+# Behavior:
+#   - Pull-only server: hard reset repo to origin/main as user "thomas"
+#   - Backup live dynamic folder
+#   - Rsync repo dynamic -> live dynamic (delete removed files)
+#   - Validate YAML (REQUIRED)
+#   - Restart Traefik
+#   - Wait for Traefik API
+#   - List file-provider routers + middlewares + live dir listing
+# -----------------------------------------------------------------------------
 
 REPO="/opt/git/Docker"
 SRC="${REPO}/stacks/edge-stack/traefik/dynamic"
@@ -30,12 +26,10 @@ DST="/opt/netlab-stack/traefik/dynamic"
 BK="/opt/netlab-stack/traefik/backups"
 
 TRAEFIK_CONTAINER="${TRAEFIK_CONTAINER:-traefik}"
-
-# Traefik API (adjust if yours is different)
 TRAEFIK_URL="${TRAEFIK_URL:-https://127.0.0.1:8080}"
 WAIT_SECONDS="${WAIT_SECONDS:-25}"
 
-# If you need an SNI->IP override for curl, set e.g.:
+# Optional curl SNI->IP override if needed:
 # TRAEFIK_RESOLVE=(--resolve "traefik.lab.local:443:127.0.0.1")
 TRAEFIK_RESOLVE=()
 
@@ -43,40 +37,23 @@ LOG_DIR="/var/log/edge-sync"
 LOG_MAIN="${LOG_DIR}/edge-sync-traefik-dynamic.log"
 LOG_RUN="${LOG_DIR}/edge-sync-traefik-dynamic-$(date +%Y%m%d-%H%M%S).log"
 
-mkdir -p "$LOG_DIR"
-touch "$LOG_MAIN" "$LOG_RUN"
-chmod 0644 "$LOG_MAIN" "$LOG_RUN"
-
-# Capture EVERYTHING (stdout+stderr) to console + both logs
-exec > >(tee -a "$LOG_MAIN" | tee -a "$LOG_RUN") 2>&1
-
-ts() { date '+%Y-%m-%d %H:%M:%S%z'; }
-info() { printf '%s [INFO] %s\n' "$(ts)" "$*"; }
-warn() { printf '%s [WARN] %s\n' "$(ts)" "$*"; }
-err()  { printf '%s [ERROR] %s\n' "$(ts)" "$*" >&2; }
-die()  { err "$*"; exit 1; }
+step() { echo "==[$1] $2 =="; }
+die()  { echo "ERROR: $*" >&2; exit 1; }
 
 need_root() { [[ "${EUID}" -eq 0 ]] || die "run as root: sudo $0"; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
 on_err() {
   local code=$?
-  err "FAILED (exit=$code) at line ${BASH_LINENO[0]}: ${BASH_COMMAND}"
-  err "Tip: check log: $LOG_RUN"
+  echo "ERROR: FAILED (exit=$code) at line ${BASH_LINENO[0]}: ${BASH_COMMAND}" >&2
+  echo "ERROR: See log: $LOG_RUN" >&2
   exit "$code"
 }
 trap on_err ERR
 
-need_root
-need git
-need rsync
-need tar
-need docker
-need curl
-need jq
-need python3
-
 validate_yaml() {
+  # REQUIRED: fail the run if YAML is invalid.
+  # Requires: python3 + python3-yaml
   python3 - <<'PY'
 import glob, sys
 try:
@@ -86,7 +63,11 @@ except Exception:
     sys.exit(11)
 
 dst = "/opt/netlab-stack/traefik/dynamic"
-files = sorted(glob.glob(dst + "/**/*.yml", recursive=True) + glob.glob(dst + "/**/*.yaml", recursive=True))
+files = sorted(
+    glob.glob(dst + "/**/*.yml", recursive=True) +
+    glob.glob(dst + "/**/*.yaml", recursive=True)
+)
+
 bad = []
 for f in files:
     try:
@@ -94,85 +75,99 @@ for f in files:
             yaml.safe_load(fp)
     except Exception as e:
         bad.append((f, str(e)))
+
 if bad:
     print("ERROR: YAML validation failed:")
     for f, e in bad:
         print(f" - {f}: {e}")
     sys.exit(12)
+
 print(f"OK: YAML validated ({len(files)} files)")
 PY
 }
 
-START_EPOCH="$(date +%s)"
+# --- requirements ---
+need_root
+need git
+need rsync
+need tar
+need docker
+need curl
+need jq
+need python3
 
-info "run_log=$LOG_RUN"
+mkdir -p "$LOG_DIR"
+touch "$LOG_MAIN" "$LOG_RUN"
+chmod 0644 "$LOG_MAIN" "$LOG_RUN"
 
-info "[0/9] Ensure root trusts GitHub host key (non-interactive)"
+# Capture EVERYTHING (stdout+stderr) to:
+#   - console
+#   - main log
+#   - per-run log
+exec > >(tee -a "$LOG_MAIN" | tee -a "$LOG_RUN") 2>&1
+
+echo "run_log=$LOG_RUN"
+
+step "0/9" "Ensure root trusts GitHub host key (non-interactive)"
 ssh-keyscan -H github.com >>/root/.ssh/known_hosts 2>/dev/null || true
 
-info "[1/9] Sync repo clone to origin/main (git as thomas)"
+step "1/9" "Sync repo clone to origin/main (git as thomas)"
 cd "$REPO"
 sudo -u thomas git fetch origin
 sudo -u thomas git checkout -q main
 sudo -u thomas git reset --hard origin/main
 
-HEAD_SHA="$(sudo -u thomas git rev-parse --short HEAD)"
-HEAD_MSG="$(sudo -u thomas git log -1 --pretty=%s | tr -d '\n' || true)"
-info "repo_head=$HEAD_SHA msg='${HEAD_MSG}'"
-
-info "[2/9] Sanity checks"
+step "2/9" "Sanity checks"
 [[ -d "$SRC" ]] || die "missing source dir: $SRC"
 mkdir -p "$DST" "$BK"
 
-info "[3/9] Backup live dynamic folder"
+step "3/9" "Backup live dynamic folder"
 BK_TGZ="${BK}/dynamic-live-$(date +%Y-%m-%d-%H%M%S).tgz"
 tar -czf "$BK_TGZ" -C "$(dirname "$DST")" "$(basename "$DST")" || true
-info "backup_created=$BK_TGZ"
+echo "backup_created=$BK_TGZ"
 
-info "[4/9] Move live backup dir out of watched folder (if present)"
+step "4/9" "Move live backup dir out of watched folder (if present)"
 if [[ -d "${DST}/backups" ]]; then
   mv -f "${DST}/backups" "/opt/netlab-stack/traefik/backups-in-dynamic-$(date +%Y%m%d-%H%M%S)" || true
-  info "moved_backups_dir_out_of_dynamic"
+  echo "moved_backups_dir_out_of_dynamic"
 else
-  info "no_live_backup_dir_found"
+  echo "no_live_backup_dir_found"
 fi
 
-info "[5/9] Rsync repo -> live (delete removed files)"
-# --itemize-changes prints exactly what changed; captured into logs via exec+tee above.
+step "5/9" "Rsync repo -> live (delete removed files)"
 rsync -a --delete --itemize-changes "${SRC}/" "${DST}/" || true
 
-info "[6/9] Validate YAML in live dynamic folder (fail-safe)"
+step "6/9" "Validate YAML in live dynamic folder (REQUIRED)"
 validate_yaml
 
-info "[7/9] Restart Traefik"
+step "7/9" "Restart Traefik"
 docker restart "$TRAEFIK_CONTAINER" >/dev/null
-info "traefik_restarted"
+echo "traefik_restarted"
 
-info "[8/9] Wait for Traefik API (up to ${WAIT_SECONDS}s)"
+step "8/9" "Wait for Traefik API (up to ${WAIT_SECONDS}s)"
 for i in $(seq 1 "$WAIT_SECONDS"); do
   if curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/overview" >/dev/null 2>&1; then
-    info "traefik_api_up_after=${i}s"
+    echo "Traefik API is up."
     break
   fi
   sleep 1
   if [[ "$i" -eq "$WAIT_SECONDS" ]]; then
-    err "Traefik API not reachable after ${WAIT_SECONDS}s"
+    echo "ERROR: Traefik API not reachable after ${WAIT_SECONDS}s" >&2
     docker logs --tail 200 "$TRAEFIK_CONTAINER" || true
     exit 25
   fi
 done
 
-info "[9/9] Verify file-provider routers + middlewares"
-info "-- File routers:"
+step "9/9" "Verify file-provider routers + middlewares"
+echo "-- File routers:"
 curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/routers" \
 | jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' || true
 
-info "-- File middlewares:"
+echo "-- File middlewares:"
 curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/middlewares" \
 | jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' || true
 
-info "-- Live dynamic dir:"
+echo "-- Live dynamic dir:"
 ls -la "$DST" || true
 
-END_EPOCH="$(date +%s)"
-info "==== SUCCESS in $((END_EPOCH-START_EPOCH))s ===="
+echo "DONE."
