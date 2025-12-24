@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+#------------------------------------------------------------------------------
+# edge-rollback-traefik-dynamic
+#
+# Purpose:
+#   Roll back Traefik live dynamic config directory to the latest (or specified)
+#   backup tarball created by edge-sync-traefik-dynamic.
+#
+# What it does:
+#   1) Picks latest backup (or uses provided tgz path)
+#   2) Archives current live dynamic to dynamic-archive/ as a safety snapshot
+#   3) Restores the selected backup
+#   4) Restarts Traefik
+#   5) Waits for API and verifies file-provider routers/middlewares
+#
+# Logging:
+#   - Logs to console and to /var/log/edge-sync/edge-rollback-traefik-dynamic.log
+#   - Each run also writes /var/log/edge-sync/edge-rollback-traefik-dynamic-YYYYmmdd-HHMMSS.log
+#------------------------------------------------------------------------------
+
+set -euo pipefail
+
+BK="/opt/netlab-stack/traefik/backups"
+DST="/opt/netlab-stack/traefik/dynamic"
+ARCH="/opt/netlab-stack/traefik/dynamic-archive"
+
+TRAEFIK_HOST="traefik.shome"
+TRAEFIK_URL="https://${TRAEFIK_HOST}"
+TRAEFIK_RESOLVE=(--resolve "${TRAEFIK_HOST}:443:127.0.0.1")
+
+WAIT_SECONDS=25
+
+LOG_DIR="/var/log/edge-sync"
+LOG_BASE="${LOG_DIR}/edge-rollback-traefik-dynamic"
+LOG_MAIN="${LOG_BASE}.log"
+LOG_RUN="${LOG_BASE}-$(date +%Y%m%d-%H%M%S).log"
+
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+ts() { date '+%Y-%m-%d %H:%M:%S%z'; }
+log() { local lvl="$1"; shift; printf '%s [%s] %s\n' "$(ts)" "$lvl" "$*" | tee -a "$LOG_MAIN" >> "$LOG_RUN"; }
+info(){ log INFO "$@"; }
+warn(){ log WARN "$@"; }
+err(){ log ERROR "$@"; }
+
+die() { err "$*"; exit 1; }
+
+on_err() {
+  local code=$?
+  err "FAILED (exit=$code) at line ${BASH_LINENO[0]}: ${BASH_COMMAND}"
+  err "Tip: check logs: $LOG_RUN"
+  exit "$code"
+}
+trap on_err ERR
+
+START_EPOCH="$(date +%s)"
+info "==== START edge-rollback-traefik-dynamic ===="
+info "run_log=$LOG_RUN"
+
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency '$1'"; }
+need tar; need curl; need jq; need docker; need ls; need head; need date
+
+usage() {
+  cat <<USAGE
+edge-rollback-traefik-dynamic - restore Traefik dynamic config from backups
+
+Usage:
+  sudo edge-rollback-traefik-dynamic
+  sudo edge-rollback-traefik-dynamic FILE.tgz
+  sudo edge-rollback-traefik-dynamic --list
+  sudo edge-rollback-traefik-dynamic -h|--help
+
+Options:
+  --list           List the most recent dynamic backups.
+  -h, --help       Show this help.
+
+Logs:
+  $LOG_MAIN
+  $LOG_RUN
+USAGE
+}
+
+list_backups() {
+  ls -1t "$BK"/dynamic-live-*.tgz 2>/dev/null | head -10 || true
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0;;
+  --list) list_backups; exit 0;;
+esac
+
+BACKUP_FILE="${1:-}"
+if [[ -z "$BACKUP_FILE" ]]; then
+  BACKUP_FILE="$(ls -1t "$BK"/dynamic-live-*.tgz 2>/dev/null | head -1 || true)"
+fi
+
+[[ -n "$BACKUP_FILE" && -f "$BACKUP_FILE" ]] || die "No backup file found. Try: sudo edge-rollback-traefik-dynamic --list"
+
+info "Using backup: $BACKUP_FILE"
+
+info "[1/6] Archive current live dynamic folder (safety)"
+sudo mkdir -p "$ARCH"
+if [[ -d "$DST" ]]; then
+  PRE="$ARCH/dynamic-pre-rollback-$(date +%F-%H%M%S).tgz"
+  sudo tar -C /opt/netlab-stack/traefik -czf "$PRE" dynamic || true
+  warn "archived_current_dynamic=$PRE"
+  sudo rm -rf "$DST"
+fi
+
+info "[2/6] Restore backup tarball"
+sudo tar -C /opt/netlab-stack/traefik -xzf "$BACKUP_FILE"
+
+info "[3/6] Restart Traefik"
+docker restart traefik >/dev/null
+info "traefik_restarted"
+
+info "[4/6] Wait for Traefik API (up to ${WAIT_SECONDS}s)"
+for i in $(seq 1 "$WAIT_SECONDS"); do
+  if curl -kfsS --connect-timeout 1 "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/version" >/dev/null 2>&1; then
+    info "traefik_api_up_after=${i}s"
+    break
+  fi
+  sleep 1
+  if [[ "$i" -eq "$WAIT_SECONDS" ]]; then
+    err "Traefik API not reachable after ${WAIT_SECONDS}s. Dumping logs:"
+    docker logs --tail 200 traefik | tee -a "$LOG_MAIN" >> "$LOG_RUN" || true
+    exit 25
+  fi
+done
+
+info "[5/6] Verify file-provider routers"
+curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/routers" \
+| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' \
+| tee -a "$LOG_MAIN" >> "$LOG_RUN"
+
+info "[6/6] Verify file-provider middlewares"
+curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/middlewares" \
+| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' \
+| tee -a "$LOG_MAIN" >> "$LOG_RUN"
+
+info "-- Live dynamic dir:"
+sudo ls -la "$DST" | tee -a "$LOG_MAIN" >> "$LOG_RUN"
+
+END_EPOCH="$(date +%s)"
+DUR="$((END_EPOCH-START_EPOCH))"
+info "==== ROLLBACK SUCCESS in ${DUR}s ===="
