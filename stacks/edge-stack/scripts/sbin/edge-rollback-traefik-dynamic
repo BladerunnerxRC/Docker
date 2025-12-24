@@ -3,144 +3,139 @@
 # edge-rollback-traefik-dynamic
 #
 # Purpose:
-#   Roll back Traefik live dynamic config directory to the latest (or specified)
-#   backup tarball created by edge-sync-traefik-dynamic.
+#   Restore Traefik live dynamic/ from a backup tgz created by edge-sync-traefik-dynamic.
 #
-# What it does:
-#   1) Picks latest backup (or uses provided tgz path)
-#   2) Archives current live dynamic to dynamic-archive/ as a safety snapshot
-#   3) Restores the selected backup
-#   4) Restarts Traefik
-#   5) Waits for API and verifies file-provider routers/middlewares
+# Key behavior:
+#   - If no backup file provided, uses newest dynamic-live-*.tgz from backups dir
+#   - Archives current live dynamic dir before restoring
+#   - Restores backup into /opt/netlab-stack/traefik
+#   - Restarts Traefik container
+#   - Waits for Traefik API
+#   - Lists file-provider routers + middlewares + live dir listing
 #
 # Logging:
-#   - Logs to console and to /var/log/edge-sync/edge-rollback-traefik-dynamic.log
-#   - Each run also writes /var/log/edge-sync/edge-rollback-traefik-dynamic-YYYYmmdd-HHMMSS.log
+#   - Console + /var/log/edge-sync/edge-rollback-traefik-dynamic.log
+#   - Per-run log: /var/log/edge-sync/edge-rollback-traefik-dynamic-YYYYmmdd-HHMMSS.log
+#
+# IMPORTANT:
+#   This script uses a global exec+tee redirect so ALL stdout/stderr from commands
+#   are captured into BOTH logs and shown on screen.
 #------------------------------------------------------------------------------
-
 set -euo pipefail
 
-BK="/opt/netlab-stack/traefik/backups"
 DST="/opt/netlab-stack/traefik/dynamic"
+BK="/opt/netlab-stack/traefik/backups"
 ARCH="/opt/netlab-stack/traefik/dynamic-archive"
 
-TRAEFIK_HOST="traefik.shome"
-TRAEFIK_URL="https://${TRAEFIK_HOST}"
-TRAEFIK_RESOLVE=(--resolve "${TRAEFIK_HOST}:443:127.0.0.1")
-
-WAIT_SECONDS=25
+TRAEFIK_CONTAINER="${TRAEFIK_CONTAINER:-traefik}"
+TRAEFIK_URL="${TRAEFIK_URL:-https://127.0.0.1:8080}"
+WAIT_SECONDS="${WAIT_SECONDS:-25}"
+TRAEFIK_RESOLVE=()
 
 LOG_DIR="/var/log/edge-sync"
-LOG_BASE="${LOG_DIR}/edge-rollback-traefik-dynamic"
-LOG_MAIN="${LOG_BASE}.log"
-LOG_RUN="${LOG_BASE}-$(date +%Y%m%d-%H%M%S).log"
+LOG_MAIN="${LOG_DIR}/edge-rollback-traefik-dynamic.log"
+LOG_RUN="${LOG_DIR}/edge-rollback-traefik-dynamic-$(date +%Y%m%d-%H%M%S).log"
 
-mkdir -p "$LOG_DIR" 2>/dev/null || true
+mkdir -p "$LOG_DIR"
+touch "$LOG_MAIN" "$LOG_RUN"
+chmod 0644 "$LOG_MAIN" "$LOG_RUN"
+
+# Capture EVERYTHING (stdout+stderr) to console + both logs
+exec > >(tee -a "$LOG_MAIN" | tee -a "$LOG_RUN") 2>&1
 
 ts() { date '+%Y-%m-%d %H:%M:%S%z'; }
-log() { local lvl="$1"; shift; printf '%s [%s] %s\n' "$(ts)" "$lvl" "$*" | tee -a "$LOG_MAIN" >> "$LOG_RUN"; }
-info(){ log INFO "$@"; }
-warn(){ log WARN "$@"; }
-err(){ log ERROR "$@"; }
+info() { printf '%s [INFO] %s\n' "$(ts)" "$*"; }
+warn() { printf '%s [WARN] %s\n' "$(ts)" "$*"; }
+err()  { printf '%s [ERROR] %s\n' "$(ts)" "$*" >&2; }
+die()  { err "$*"; exit 1; }
 
-die() { err "$*"; exit 1; }
+need_root() { [[ "${EUID}" -eq 0 ]] || die "run as root: sudo $0"; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
 on_err() {
   local code=$?
   err "FAILED (exit=$code) at line ${BASH_LINENO[0]}: ${BASH_COMMAND}"
-  err "Tip: check logs: $LOG_RUN"
+  err "Tip: check log: $LOG_RUN"
   exit "$code"
 }
 trap on_err ERR
 
-START_EPOCH="$(date +%s)"
-info "==== START edge-rollback-traefik-dynamic ===="
-info "run_log=$LOG_RUN"
-
-need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency '$1'"; }
-need tar; need curl; need jq; need docker; need ls; need head; need date
-
 usage() {
-  cat <<USAGE
-edge-rollback-traefik-dynamic - restore Traefik dynamic config from backups
+  cat <<EOF
+Usage: sudo edge-rollback-traefik-dynamic [--list] [backup.tgz]
 
-Usage:
-  sudo edge-rollback-traefik-dynamic
-  sudo edge-rollback-traefik-dynamic FILE.tgz
-  sudo edge-rollback-traefik-dynamic --list
-  sudo edge-rollback-traefik-dynamic -h|--help
-
-Options:
-  --list           List the most recent dynamic backups.
-  -h, --help       Show this help.
-
-Logs:
-  $LOG_MAIN
-  $LOG_RUN
-USAGE
+--list        list available backups (newest first)
+backup.tgz    optional; if omitted, uses newest dynamic-live-*.tgz from:
+              $BK
+EOF
 }
 
-list_backups() {
-  ls -1t "$BK"/dynamic-live-*.tgz 2>/dev/null | head -10 || true
-}
+need_root
+need tar
+need docker
+need curl
+need jq
 
-case "${1:-}" in
-  -h|--help) usage; exit 0;;
-  --list) list_backups; exit 0;;
-esac
-
-BACKUP_FILE="${1:-}"
-if [[ -z "$BACKUP_FILE" ]]; then
-  BACKUP_FILE="$(ls -1t "$BK"/dynamic-live-*.tgz 2>/dev/null | head -1 || true)"
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
 fi
 
-[[ -n "$BACKUP_FILE" && -f "$BACKUP_FILE" ]] || die "No backup file found. Try: sudo edge-rollback-traefik-dynamic --list"
-
-info "Using backup: $BACKUP_FILE"
-
-info "[1/6] Archive current live dynamic folder (safety)"
-sudo mkdir -p "$ARCH"
-if [[ -d "$DST" ]]; then
-  PRE="$ARCH/dynamic-pre-rollback-$(date +%F-%H%M%S).tgz"
-  sudo tar -C /opt/netlab-stack/traefik -czf "$PRE" dynamic || true
-  warn "archived_current_dynamic=$PRE"
-  sudo rm -rf "$DST"
+if [[ "${1:-}" == "--list" ]]; then
+  ls -1t "${BK}"/dynamic-live-*.tgz 2>/dev/null || true
+  exit 0
 fi
 
-info "[2/6] Restore backup tarball"
-sudo tar -C /opt/netlab-stack/traefik -xzf "$BACKUP_FILE"
+BACKUP="${1:-}"
+if [[ -z "$BACKUP" ]]; then
+  BACKUP="$(ls -1t "${BK}"/dynamic-live-*.tgz 2>/dev/null | head -1 || true)"
+fi
+[[ -n "$BACKUP" && -f "$BACKUP" ]] || die "Backup not found: $BACKUP"
 
-info "[3/6] Restart Traefik"
-docker restart traefik >/dev/null
+START_EPOCH="$(date +%s)"
+
+info "run_log=$LOG_RUN"
+info "[1/7] Selected backup: $BACKUP"
+
+info "[2/7] Archive current live dynamic before restore"
+mkdir -p "$ARCH"
+ARCH_TGZ="${ARCH}/dynamic-pre-rollback-$(date +%Y-%m-%d-%H%M%S).tgz"
+tar -czf "$ARCH_TGZ" -C "$(dirname "$DST")" "$(basename "$DST")" || true
+info "archive_created=$ARCH_TGZ"
+
+info "[3/7] Restore backup -> /opt/netlab-stack/traefik"
+tar -xzf "$BACKUP" -C /opt/netlab-stack/traefik
+
+info "[4/7] Restart Traefik container"
+docker restart "$TRAEFIK_CONTAINER" >/dev/null
 info "traefik_restarted"
 
-info "[4/6] Wait for Traefik API (up to ${WAIT_SECONDS}s)"
+info "[5/7] Wait for Traefik API (up to ${WAIT_SECONDS}s)"
 for i in $(seq 1 "$WAIT_SECONDS"); do
-  if curl -kfsS --connect-timeout 1 "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/version" >/dev/null 2>&1; then
+  if curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/overview" >/dev/null 2>&1; then
     info "traefik_api_up_after=${i}s"
     break
   fi
   sleep 1
   if [[ "$i" -eq "$WAIT_SECONDS" ]]; then
-    err "Traefik API not reachable after ${WAIT_SECONDS}s. Dumping logs:"
-    docker logs --tail 200 traefik | tee -a "$LOG_MAIN" >> "$LOG_RUN" || true
+    err "Traefik API not reachable after ${WAIT_SECONDS}s"
+    docker logs --tail 200 "$TRAEFIK_CONTAINER" || true
     exit 25
   fi
 done
 
-info "[5/6] Verify file-provider routers"
+info "[6/7] Verify file-provider routers"
+info "-- File routers:"
 curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/routers" \
-| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' \
-| tee -a "$LOG_MAIN" >> "$LOG_RUN"
+| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' || true
 
-info "[6/6] Verify file-provider middlewares"
+info "[7/7] Verify file-provider middlewares + live dir"
+info "-- File middlewares:"
 curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/middlewares" \
-| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' \
-| tee -a "$LOG_MAIN" >> "$LOG_RUN"
+| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' || true
 
 info "-- Live dynamic dir:"
-sudo ls -la "$DST" | tee -a "$LOG_MAIN" >> "$LOG_RUN"
+ls -la "$DST" || true
 
 END_EPOCH="$(date +%s)"
-DUR="$((END_EPOCH-START_EPOCH))"
-info "==== ROLLBACK SUCCESS in ${DUR}s ===="
+info "==== SUCCESS in $((END_EPOCH-START_EPOCH))s ===="
