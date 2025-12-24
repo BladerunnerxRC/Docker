@@ -1,5 +1,6 @@
 api:
   dashboard: true
+  insecure: true
 
 log:
   level: INFO
@@ -9,7 +10,9 @@ entryPoints:
     address: ":80"
   websecure:
     address: ":443"
-
+  traefik:
+    address: ":8082"
+    
 providers:
   docker:
     exposedByDefault: false
