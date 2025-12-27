@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   traefik:
     image: traefik:latest
@@ -8,7 +10,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "127.0.0.1:8082:8082"
+      - "8082:8082"
+    extra_hosts:
+      - "ca.shome:192.168.200.3" # LAN-only self hosted Certificate Authority hardcoded to avoid possible connection issues due to all apps boot order.
     networks:
       - edge
     volumes:
@@ -17,13 +21,32 @@ services:
       - ${TRAEFIK_CERTS}:/etc/traefik/certs:ro
       - ${TRAEFIK_ACME}:/etc/traefik/acme:rw
       - ${TRAEFIK_STEPCA}:/etc/traefik/stepca:ro
+      - /opt/netlab-stack/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+
+      # ✅ BasicAuth usersfile (prevents $ hash issues in Portainer/env/labels)
+      - /opt/netlab-stack/traefik/auth/.htpasswd:/etc/traefik/.htpasswd:ro
+
+    command:
+      - --log.level=DEBUG
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.traefik.rule=Host(`traefik.${BASE_DOMAIN}`)"
+
+      # Router for Traefik dashboard/API (limit to /dashboard + /api)
+      - "traefik.http.routers.traefik.rule=Host(`traefik.${BASE_DOMAIN}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
       - "traefik.http.routers.traefik.entrypoints=websecure"
       - "traefik.http.routers.traefik.tls=true"
       - "traefik.http.routers.traefik.tls.certresolver=${CERTRESOLVER}"
       - "traefik.http.routers.traefik.service=api@internal"
+
+      # 🔒 Protect dashboard: IP allowlist + BasicAuth
+      - "traefik.http.routers.traefik.middlewares=traefik-ipallow@docker,traefik-auth@docker"
+
+      # Traefik v3: IPAllowList
+      - "traefik.http.middlewares.traefik-ipallow.ipallowlist.sourcerange=${TRAEFIK_DASHBOARD_ALLOWLIST:-192.168.200.0/24,192.168.0.0/16}"
+
+      # ✅ Use usersfile instead of users=... env var
+      - "traefik.http.middlewares.traefik-auth.basicauth.usersfile=/etc/traefik/.htpasswd"
+      - "traefik.http.middlewares.traefik-auth.basicauth.removeheader=true"
 
   adguardhome:
     image: adguard/adguardhome:latest
@@ -40,11 +63,11 @@ services:
       - ${ADGUARD_WORK}:/opt/adguardhome/work:rw
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.adguard.rule=Host(`adguard.${BASE_DOMAIN}`)"
+      - "traefik.http.routers.adguard.rule=Host(`dns.${BASE_DOMAIN}`)"
       - "traefik.http.routers.adguard.entrypoints=websecure"
       - "traefik.http.routers.adguard.tls=true"
       - "traefik.http.routers.adguard.tls.certresolver=${CERTRESOLVER}"
-      - "traefik.http.services.adguard.loadbalancer.server.port=80"
+      - "traefik.http.services.adguard.loadbalancer.server.port=3000"
 
   whoami:
     image: traefik/whoami:latest
