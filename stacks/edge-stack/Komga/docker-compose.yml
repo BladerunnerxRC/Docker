@@ -1,0 +1,40 @@
+services:
+  komga:
+    image: ghcr.io/gotson/komga:latest
+    mem_limit: 1.2G
+    mem_reservation: 512M
+    cpus: 1
+    cpu_shares: 512
+    container_name: komga
+
+    # If your host is amd64 (Optiplex usually is), this prevents pulling/running an arm image variant.
+    platform: linux/amd64
+
+    # Match the owner of /opt/komga on the host
+    user: "1000:1000"
+
+    ports:
+      - "25600:25600"
+
+    environment:
+      - TZ=America/New_York
+    
+    volumes:
+      # NAS library (READ-ONLY) 
+      - /mnt/nas_comics:/books:ro
+
+      # NAS library (READ-WRITE)
+      #- /mnt/nas_comics:/books:rw
+
+      # Komga DB/cache/config (READ-WRITE)
+      - /opt/komga:/config:rw
+
+    security_opt:
+      - no-new-privileges:true
+
+    # FIX for: "failed to map segment from shared object"
+    # sqlite-jdbc extracts a native .so to /tmp and needs executable mappings.
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=256m
+
+    restart: unless-stopped
