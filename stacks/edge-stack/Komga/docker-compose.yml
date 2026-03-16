@@ -37,4 +37,17 @@ services:
     tmpfs:
       - /tmp:rw,exec,nosuid,nodev,size=256m
 
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:25600/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     restart: unless-stopped

@@ -1,0 +1,57 @@
+services:
+  app:
+    image: ghcr.io/manyfold3d/manyfold:latest
+    ports:
+      - "3214:3214"
+    volumes:
+      - ${MANYFOLD_LIB_PATH}:/libraries
+    environment:
+      DATABASE_ADAPTER: "postgresql"
+      DATABASE_HOST: "postgres-manyfoldsvr"
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: "${POSTGRES_DB}"
+      DATABASE_USER: "${POSTGRES_USER}"
+      DATABASE_PASSWORD: "${POSTGRES_PASSWORD}"
+      SECRET_KEY_BASE: "${SECRET_KEY_BASE}"
+      REDIS_URL: "redis://redis-manyfoldsvr:6379/1"
+      PUID: "${PUID}"
+      PGID: "${PGID}"
+    restart: unless-stopped
+    depends_on:
+      - postgres-manyfoldsvr
+      - redis-manyfoldsvr
+    networks:
+      - manyfold
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+
+  postgres-manyfoldsvr:
+    image: postgres:15
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+    restart: unless-stopped
+    networks:
+      - manyfold
+
+  redis-manyfoldsvr:
+    image: redis:7
+    restart: unless-stopped
+    networks:
+      - manyfold
+
+volumes:
+  db_data:
+
+networks:
+  manyfold:
