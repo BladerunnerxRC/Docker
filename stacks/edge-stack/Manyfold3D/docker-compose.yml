@@ -18,8 +18,10 @@ services:
       PGID: "${PGID}"
     restart: unless-stopped
     depends_on:
-      - postgres-manyfoldsvr
-      - redis-manyfoldsvr
+      postgres-manyfoldsvr:
+        condition: service_healthy
+      redis-manyfoldsvr:
+        condition: service_healthy
     networks:
       - manyfold
     security_opt:
@@ -31,6 +33,17 @@ services:
       - DAC_OVERRIDE
       - SETUID
       - SETGID
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3214/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   postgres-manyfoldsvr:
     image: postgres:15
@@ -43,12 +56,34 @@ services:
     restart: unless-stopped
     networks:
       - manyfold
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis-manyfoldsvr:
     image: redis:7
     restart: unless-stopped
     networks:
       - manyfold
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   db_data:
