@@ -1,0 +1,37 @@
+services:
+  borg-ui:
+    image: ainullcode/borg-ui:latest
+    container_name: borg-backup
+    environment:
+      TZ: America/New_York
+      PORT: "8081"
+      PUID: "1024"
+      PGID: "100"
+    ports:
+      - "8888:8081"
+    volumes:
+      - borgui_data:/data
+      - borgui_cache:/home/borg/.cache/borg
+
+      - /srv/borg-source:/source/data:ro
+      - /opt/borg-ui-empty:/source/empty:ro
+
+      # Optiplex repo (existing, unchanged)
+      - /mnt/backups/borgrepo:/repo:rw
+
+      # Smiddleware repo (new)
+      - /mnt/borg_smiddleware:/repo_smiddleware:rw
+
+      - /var/log/borg:/logs:ro
+
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    restart: unless-stopped
+
+volumes:
+  borgui_data:
+  borgui_cache:
