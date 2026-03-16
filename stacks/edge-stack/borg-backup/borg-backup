@@ -32,6 +32,7 @@ services:
       - apparmor:unconfined
     restart: unless-stopped
 
+# local volumes for borg-ui data and cache
 volumes:
   borgui_data:
   borgui_cache:
