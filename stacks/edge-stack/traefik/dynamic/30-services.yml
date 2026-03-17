@@ -36,11 +36,36 @@ http:
         servers:
           - url: "http://192.168.200.98:9000"
 
+    portainer-2:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.14:9000"
+
     porttracker:
       loadBalancer:
         passHostHeader: true
         servers:
           - url: "http://192.168.200.98:4999"
+
+    borg-optiplex-docker:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.98:8888"
+
+    nocodb:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.98:7777"
+
+    whoami:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.98:80"
+
 
     webmin-mid:
       loadBalancer:
@@ -55,3 +80,25 @@ http:
         serversTransport: webmin-insecure
         servers:
           - url: "https://192.168.200.98:10000"
+
+    webmin-optiplex-two:
+      loadBalancer:
+        passHostHeader: false
+        serversTransport: webmin-insecure
+        servers:
+          - url: "https://192.168.200.14:10000"
+
+    # k3s ingress upstream (k3s traefik LoadBalancer IP)
+    k3s-traefik:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://192.168.200.240:80
+
+    # The following is currently running on test VMware VM in Razoripper PC
+    rancher:
+      loadBalancer:
+        passHostHeader: true
+        serversTransport: rancher-https
+        servers:
+          - url: "https://192.168.200.91:443"

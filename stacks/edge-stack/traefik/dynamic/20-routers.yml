@@ -48,6 +48,14 @@ http:
       middlewares: ["security-headers", "compression"]
       service: portainer
 
+    portainer-2:
+      rule: "Host(`portainer-2.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: portainer-2
+
     porttracker:
       rule: "Host(`porttracker.shome`)"
       entryPoints: ["websecure"]
@@ -71,3 +79,45 @@ http:
         certResolver: stepca
       middlewares: ["security-headers", "compression"]
       service: webmin-opti
+
+    webmin-optiplex-two:
+      rule: "Host(`webmin-optiplex-two.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: webmin-optiplex-two
+
+    borg-optiplex-docker:
+      rule: "Host(`borg-optiplex-docker.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: borg-optiplex-docker
+
+    nocodb:
+      rule: "Host(`nocodb.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: nocodb
+
+    k3s-catchall:
+      rule: "HostRegexp(`{name:[a-z0-9-]+}.shome`)"
+      entryPoints: ["websecure"]
+      priority: 10
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: k3s-traefik
+
+# The following is currently running on test Ubuntu VMware VM
+    rancher:
+      rule: "Host(`rancher.shome`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: stepca
+      middlewares: ["security-headers", "compression"]
+      service: rancher
