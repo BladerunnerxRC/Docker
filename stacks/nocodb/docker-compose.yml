@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nocodb-postgres
+    environment:
+      POSTGRES_DB: ${NC_PG_DATABASE}
+      POSTGRES_USER: ${NC_PG_USER}
+      POSTGRES_PASSWORD: ${NC_PG_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - nocodb_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${NC_PG_USER} -d ${NC_PG_DATABASE} || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - nocodb_net
+
+  nocodb:
+    image: nocodb/nocodb:latest
+    container_name: nocodb
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${NC_HOST_PORT}:8080"  # host 7777 -> container 8080
+      # If you later reverse-proxy and want local-only binding:
+      # - "127.0.0.1:${NC_HOST_PORT}:8080"
+    environment:
+      TZ: ${TZ}
+      NC_DB: "pg://postgres:5432?u=${NC_PG_USER}&p=${NC_PG_PASSWORD}&d=${NC_PG_DATABASE}"
+      NC_AUTH_JWT_SECRET: ${NC_AUTH_JWT_SECRET}
+      # Optional:
+      # NC_DISABLE_TELEMETRY: "true"
+    volumes:
+      - nocodb_data:/usr/app/data
+    restart: unless-stopped
+    networks:
+      - nocodb_net
+
+volumes:
+  nocodb_pg:
+  nocodb_data:
+
+networks:
+  nocodb_net:
+    name: nocodb_net
