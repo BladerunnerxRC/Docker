@@ -34,7 +34,7 @@ services:
       - SETUID
       - SETGID
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3214/ || exit 1"]
+      test: ["CMD", "ruby", "-rsocket", "-e", "s=TCPSocket.new('127.0.0.1',3214);s.close;exit 0"]
       interval: 30s
       timeout: 10s
       retries: 5
