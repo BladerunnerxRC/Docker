@@ -77,7 +77,6 @@ Create these directories on the Synology NAS before deploying the stack:
   - Slicers likely need to be shut down before syncing to prevent Windows file locks.
   - Syncthing clients need to be installed on Windows PCs.
 
-
 ## Enhancements
 
 - [ ] Create a PowerShell script to automate slicer shutdown, sync, and restart.
@@ -89,15 +88,9 @@ Create these directories on the Synology NAS before deploying the stack:
 - [ ] Add a backup routine to a NAS share, either manual or scheduled through host cron or an internal Docker container process.
 - [ ] Migrate to Kubernetes or Docker Swarm.
 
-
-
 <span style="color:rgba(16,185,129,1)">Code subject to change at any time before release. Execute at your own risk.</span>
 
-
-
 ## Notes
-
-
 
 ### What the Docker “sudo master” provides
 
@@ -111,8 +104,6 @@ Create these directories on the Synology NAS before deploying the stack:
 - Configure the Syncthing folder on each Windows PC as **Receive Only** (if you want a single authoritative source) or **Send & Receive** (if any PC can be the source).
 - For **manual control** set **Rescan Interval = 0** and use the **Rescan** button, or **pause/unpause the folder** when you want to sync. You can script pause/resume/rescan via the Syncthing CLI/API for a one‑click workflow.
 
-
-
 ### Risks, mitigations, and possible next steps
 
 - **Risk:** Conflicts if two machines edit simultaneously. **Mitigation:** Close Bambu Studio, use Receive Only or manual rescan, enable file versioning.
@@ -123,4 +114,3 @@ Create these directories on the Synology NAS before deploying the stack:
 (ctl-click)
 
 [Welcome to Syncthing’s documentation! — Syncthing documentation](https://docs.syncthing.net/index.html)
-
