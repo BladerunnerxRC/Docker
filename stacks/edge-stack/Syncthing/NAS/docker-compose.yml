@@ -1,0 +1,47 @@
+services:
+  syncthing:
+    image: syncthing/syncthing:latest
+    container_name: syncthing
+    restart: unless-stopped
+    network_mode: "host"                # recommended for LAN discovery and best throughput
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - /srv/syncthing/config:/var/syncthing/config   # Syncthing config & DB (persistent)
+      - /srv/syncthing/data:/var/syncthing/data       # optional anchor copy of synced folders
+    healthcheck:
+      test: ["CMD-SHELL","/usr/bin/test -f /var/syncthing/config/config.xml || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  syncthing-backup:
+    image: alpine:3.19
+    container_name: syncthing-backup
+    restart: unless-stopped
+    depends_on:
+      - syncthing
+    volumes:
+      - /srv/syncthing/config:/source/config:ro
+      - /srv/syncthing/data:/source/data:ro
+      - /mnt/nas/syncthing-backups:/backup:rw   # NAS mount on host
+    entrypoint: ["/bin/sh","-c"]
+    command: |
+      "apk add --no-cache rsync bash >/dev/null 2>&1 || true;
+       while true; do
+         ts=$(date +%Y%m%d-%H%M%S);
+         mkdir -p /backup/$ts;
+         rsync -a --delete --exclude='*.lock' /source/config/ /backup/$ts/config/;
+         rsync -a --delete /source/data/ /backup/$ts/data/;
+         # keep last 14 backups
+         ls -1tr /backup | head -n -14 | xargs -r -I {} rm -rf /backup/{};
+         sleep 3600;
+       done"
+
+# Notes:
+# - Deploy this stack in Portainer Stacks. Create host directories before deploying.
+# - If I  cannot use host networking, remove network_mode and add ports:
+#   ports:
+#     - "8384:8384"
+#     - "22000:22000"
+#     - "21027:21027/udp"
