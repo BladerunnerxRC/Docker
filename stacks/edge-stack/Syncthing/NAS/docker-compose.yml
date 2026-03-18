@@ -7,8 +7,8 @@ services:
     environment:
       - TZ=America/New_York
     volumes:
-      - /srv/syncthing/config:/var/syncthing/config   # Syncthing config & DB (persistent)
-      - /srv/syncthing/data:/var/syncthing/data       # optional anchor copy of synced folders
+      - /volume1/docker/syncthing/config:/var/syncthing/config   # Synology DSM path for Syncthing config & DB
+      - /volume1/docker/syncthing/data:/var/syncthing/data       # Synology DSM path for anchor copy of synced folders
     healthcheck:
       test: ["CMD-SHELL","/usr/bin/test -f /var/syncthing/config/config.xml || exit 1"]
       interval: 30s
@@ -22,9 +22,9 @@ services:
     depends_on:
       - syncthing
     volumes:
-      - /srv/syncthing/config:/source/config:ro
-      - /srv/syncthing/data:/source/data:ro
-      - /mnt/nas/syncthing-backups:/backup:rw   # NAS mount on host
+      - /volume1/docker/syncthing/config:/source/config:ro
+      - /volume1/docker/syncthing/data:/source/data:ro
+      - /volume1/docker/syncthing/backups:/backup:rw   # Synology DSM backup folder
     entrypoint: ["/bin/sh","-c"]
     command: |
       "apk add --no-cache rsync bash >/dev/null 2>&1 || true;
@@ -39,7 +39,8 @@ services:
        done"
 
 # Notes:
-# - Deploy this stack in Portainer Stacks. Create host directories before deploying.
+# - Deploy this stack in Portainer Stacks or Synology Container Manager. Create host directories before deploying.
+# - Create these DSM folders first: /volume1/docker/syncthing/config, /volume1/docker/syncthing/data, /volume1/docker/syncthing/backups
 # - If I  cannot use host networking, remove network_mode and add ports:
 #   ports:
 #     - "8384:8384"
