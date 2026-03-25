@@ -6,3 +6,4 @@ secrets/
 **/*password*
 **/acme.json
 **/certs/
+stacks/edge-stack/nocodb/.env
