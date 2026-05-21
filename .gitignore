@@ -1,6 +1,6 @@
 .env
 **/.env
-!stacks/Homepage/.env
+!stacks/Homepage/stack.env
 secrets/
 **/*secret*
 **/*token*
