@@ -4,10 +4,16 @@ services:
     container_name: homepage
     env_file:
       - .env
+    environment:
+      TZ: "${TZ:?TZ is required}"
+      HOMEPAGE_ALLOWED_HOSTS: "${HOMEPAGE_ALLOWED_HOSTS:?HOMEPAGE_ALLOWED_HOSTS is required}"
+      PUID: "${PUID:?PUID is required}"
+      PGID: "${PGID:?PGID is required}"
+      LOG_TARGETS: "${LOG_TARGETS:?LOG_TARGETS is required}"
     ports:
-      - "${HOMEPAGE_PORT}:3000"
+      - "${HOMEPAGE_PORT:?HOMEPAGE_PORT is required}:3000"
     volumes:
-      - ${HOMEPAGE_CONFIG_PATH}:/app/config
+      - ${HOMEPAGE_CONFIG_PATH:?HOMEPAGE_CONFIG_PATH is required}:/app/config
       # Optional: enable Docker service discovery widgets.
       # Remove this mount if you do not need Docker integration.
       - /var/run/docker.sock:/var/run/docker.sock:ro
