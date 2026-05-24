@@ -2,18 +2,16 @@ services:
   homepage:
     image: ghcr.io/gethomepage/homepage:latest
     container_name: homepage
-    env_file:
-      - .env
     environment:
-      TZ: "${TZ:?TZ is required}"
-      HOMEPAGE_ALLOWED_HOSTS: "${HOMEPAGE_ALLOWED_HOSTS:?HOMEPAGE_ALLOWED_HOSTS is required}"
-      PUID: "${PUID:?PUID is required}"
-      PGID: "${PGID:?PGID is required}"
-      LOG_TARGETS: "${LOG_TARGETS:?LOG_TARGETS is required}"
+      TZ: "America/New_York"
+      HOMEPAGE_ALLOWED_HOSTS: "homepage.shome"
+      PUID: "1000"
+      PGID: "1000"
+      LOG_TARGETS: "stdout"
     ports:
-      - "${HOMEPAGE_PORT:?HOMEPAGE_PORT is required}:3000"
+      - "3030:3000"
     volumes:
-      - ${HOMEPAGE_CONFIG_PATH:?HOMEPAGE_CONFIG_PATH is required}:/app/config
+      - ./config:/app/config
       # Optional: enable Docker service discovery widgets.
       # Remove this mount if you do not need Docker integration.
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -26,7 +24,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3030', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 5
