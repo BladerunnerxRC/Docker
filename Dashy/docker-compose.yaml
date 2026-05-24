@@ -1,0 +1,42 @@
+version: "3.8"
+
+services:
+  dashy:
+    image: lissy93/dashy:latest
+    container_name: dashy
+    restart: unless-stopped
+
+    ports:
+      - "4000:8080"
+
+    volumes:
+      - dashy_user_data:/app/user-data
+
+    environment:
+      NODE_ENV: production
+      UID: 1000
+      GID: 1000
+
+    healthcheck:
+      test: ["CMD", "node", "/app/services/healthcheck"]
+      interval: 90s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+volumes:
+  dashy_user_data:
+    name: dashy_user_data

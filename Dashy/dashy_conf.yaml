@@ -1,0 +1,246 @@
+appConfig:
+  theme: glass
+  language: en
+  iconSize: large
+  layout: horizontal
+pageInfo:
+  title: Smith Network Dashboard
+  description: Welcome Human!
+  navLinks:
+    - title: GitHub
+      path: https://github.com/Lissy93/dashy
+    - title: Documentation
+      path: https://dashy.to/docs
+sections:
+  - name: Applications
+    icon: >-
+      https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@latest/dark/replit-color.png
+    displayData:
+      sortBy: alphabetical
+      rows: 3
+      cols: 4
+      collapsed: true
+    items:
+      - title: Smith Family Photos
+        description: Synology Photos on SMITHVAULT
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/synology-photos.png
+        url: >-
+          http://192.168.200.3:5000/?launchApp=SYNO.Foto.AppInstance#/shared_space/folder/1
+        target: newtab
+        id: 0_1255_smithfamilyphotos
+      - title: Komga
+        description: Comic Book Reader
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/komga.png
+        url: https://komga.shome
+        target: newtab
+        id: 1_1255_komga
+      - title: Meshy
+        description: AI 3D Model Creation (Online)
+        icon: >-
+          https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@latest/dark/meshy-color.png
+        url: https://www.meshy.ai/discover
+        target: newtab
+        id: 2_1255_meshy
+      - title: OnShape
+        description: Online Web CAD
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/onshape-dark.png
+        url: https://cad.onshape.com/
+        target: newtab
+        id: 3_1255_onshape
+      - title: GitHub
+        description: My GitHub Page
+        icon: >-
+          https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@latest/dark/github.png
+        url: https://github.com/
+        target: newtab
+        id: 4_1255_github
+      - title: Manyfold
+        description: STL catalog and viewer
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/manyfold.png
+        url: https://manyfold3d.shome/dashboard
+        target: newtab
+        id: 5_1255_manyfold
+      - title: Gmail
+        description: tasmith2@gmail.com
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/gmail.png
+        url: https://mail.google.com/
+        target: newtab
+        id: 6_1255_gmail
+  - name: Tools
+    icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/webtools.png
+    displayData:
+      sortBy: alphabetical
+      rows: 3
+      cols: 4
+      collapsed: true
+    items:
+      - title: IT Tools
+        description: Misc IT related calculators
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/it-tools.png
+        url: http://192.168.200.14:46231/
+        target: newtab
+        id: 0_529_ittools
+      - title: Borg Backup
+        description: UI for Borg Server Backups
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/borg-backup-server.png
+        url: https://borg-optiplex-docker.shome/login
+        target: newtab
+        id: 1_529_borgbackup
+      - title: LibreNMS
+        description: Network Monitoring System
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/librenms.png
+        url: http://192.168.200.242/
+        target: newtab
+        id: 2_529_librenms
+  - name: Network Admin
+    icon: >-
+      https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/networking-toolbox.png
+    displayData:
+      sortBy: alphabetical
+      rows: 3
+      cols: 4
+      collapsed: true
+    items:
+      - title: Synology Router
+        description: Entry Point
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/synology-light.png
+        url: http://192.168.200.1:8000/webman/index.cgi
+        target: newtab
+        id: 0_1267_synologyrouter
+      - title: T2600G-18TS Switch
+        description: Managed Switch
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/tp-link.png
+        url: http://192.168.200.2/
+        target: newtab
+        id: 1_1267_tgtsswitch
+      - title: AdGuard Home
+        description: DNS filter and Reverse Proxy
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/adguard-home.png
+        url: https://dns.shome/#
+        target: newtab
+        id: 2_1267_adguardhome
+      - title: Traefik Proxy
+        description: Rev Proxy, TSL Cert Manage
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/traefik-proxy.png
+        url: https://traefik.shome/dashboard/#/
+        target: newtab
+        id: 3_1267_traefikproxy
+      - title: Tailscale
+        description: Secure VPN
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/tailscale-light.png
+        url: https://login.tailscale.com/admin/machines
+        target: newtab
+        id: 4_1267_tailscale
+  - name: Server Admin
+    icon: >-
+      https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/serverjockey.png
+    displayData:
+      sortBy: alphabetical
+      rows: 3
+      cols: 3
+      collapsed: true
+    items:
+      - title: Webmin
+        description: OPTIPLEX-DOCKER
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/webmin.png
+        url: https://webmin-opti.shome/sysinfo.cgi?xnavigation=1
+        target: newtab
+        id: 0_1152_webmin
+      - title: Webmin
+        description: OPTIPLEX-TWO
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/webmin.png
+        url: https://webmin-optiplex-two.shome
+        target: newtab
+        id: 1_1152_webmin
+      - title: Webmin
+        description: SMIDDLEWARE
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/webmin.png
+        url: https://webmin-mid.shome/
+        target: newtab
+        id: 2_1152_webmin
+      - title: Home Assistant
+        description: Smith's Home Automation
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/home-assistant-alt.png
+        url: http://192.168.200.13:8123/
+        target: newtab
+        id: 3_1152_homeassistant
+  - name: Storage
+    icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/ugreen-nas.png
+    displayData:
+      sortBy: reverse-alphabetical
+      rows: 3
+      cols: 4
+      collapsed: true
+    items:
+      - title: Synology NAS
+        description: SMITHVAULT
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/synology-light.png
+        url: http://192.168.200.3:5000/
+        target: newtab
+        id: 0_725_synologynas
+      - title: Synology NAS
+        description: SMITHMOUNTAIN
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/synology-light.png
+        url: http://192.168.200.94:5000/
+        target: newtab
+        id: 1_725_synologynas
+      - title: Synology NAS
+        description: SMITHVIDS
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/synology-light.png
+        url: http://192.168.200.109:5000/
+        target: newtab
+        id: 2_725_synologynas
+  - name: Docker
+    icon: >-
+      https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/docker-moby.png
+    displayData:
+      sortBy: alphabetical
+      rows: 3
+      cols: 4
+    items:
+      - title: What's Up Doc
+        description: 'Container Update Management '
+        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/wud.png
+        url: https://wud.shome/
+        target: newtab
+        id: 0_600_whatsupdoc
+      - title: Portainer BE
+        description: OPTIPLEX-DOCKER Docker Management
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/portainer-be-dark.png
+        url: http://192.168.200.98:9000/#!/auth
+        target: newtab
+        id: 1_600_portainerbe
+      - title: Portainer BE
+        description: OPTIPLEX-TWO and SMIDDLEWARE  Docker Management
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/portainer-be-dark.png
+        url: https://portainer-2.shome/#!/auth
+        target: newtab
+        id: 2_600_portainerbe
+      - title: Portainer BE
+        description: NAS Docker Management
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/portainer-be-dark.png
+        url: http://192.168.200.3:10000/#!/home
+        target: newtab
+        id: 3_600_portainerbe
+  - name: Getting Started
+    icon: fas fa-rocket
+    items:
+      - title: GitHub
+        description: Source Code, Issues and Pull Requests
+        url: https://github.com/lissy93/dashy
+        icon: si-github
+        id: 0_1481_github
+      - title: Docs
+        description: Configuring & Usage Documentation
+        provider: Dashy.to
+        icon: far fa-book
+        url: https://dashy.to/docs
+        id: 1_1481_docs
+pages: []
