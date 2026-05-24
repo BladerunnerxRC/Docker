@@ -2,7 +2,7 @@
 
 Self-hosted dashboard for quickly accessing your applications, infrastructure tools, and admin pages.
 
-Official Dashy GitHub repository: https://github.com/Lissy93/dashy
+Official Dashy GitHub repository: <https://github.com/Lissy93/dashy/>
 
 This folder contains:
 
@@ -54,7 +54,7 @@ docker compose down
 
 Open:
 
-- http://localhost:4000
+- <http://localhost:4000/>
 
 From another device, replace `localhost` with the Docker host IP.
 
