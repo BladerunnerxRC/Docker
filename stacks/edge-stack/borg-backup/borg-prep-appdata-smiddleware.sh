@@ -26,7 +26,7 @@ TMP="$(mktemp -d "${BASE}/.tmp.XXXXXX")"
 LATEST="${BASE}/latest"
 
 mkdir -p "$BASE"
-mkdir -p "$TMP"/{metadata,docker,adguard,traefik,portracker}
+mkdir -p "$TMP"/{metadata,docker,adguard,traefik,portracker,dashy}
 
 echo "Preparing app-consistent backup data for smiddleware..."
 
@@ -78,6 +78,16 @@ if [ -d /volume1/docker/portracker ]; then
     --exclude='*.db-wal' \
     --exclude='*.db-shm' \
     /volume1/docker/portracker/ "$TMP/portracker/files/"
+fi
+
+# -----------------------------
+# Dashy user data snapshot
+# -----------------------------
+if [[ -d /var/lib/docker/volumes/dashy_user_data/_data ]]; then
+  echo "Snapshotting Dashy user data..."
+  rsync -a --delete \
+    /var/lib/docker/volumes/dashy_user_data/_data/ \
+    "$TMP/dashy/user-data/"
 fi
 
 # SQLite-safe backup of Portracker DB if present.
