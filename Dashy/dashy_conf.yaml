@@ -15,7 +15,8 @@ pageInfo:
       path: https://dashy.to/docs
 sections:
   - name: Applications
-    icon: https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@latest/dark/replit-color.png
+    icon: >-
+      https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@latest/dark/replit-color.png
     displayData:
       sortBy: alphabetical
       rows: 3
@@ -25,7 +26,8 @@ sections:
       - title: Smith Family Photos
         description: Synology Photos on SMITHVAULT
         icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/synology-photos.png
-        url: http://192.168.200.3:5000/?launchApp=SYNO.Foto.AppInstance#/shared_space/folder/1
+        url: >-
+          http://192.168.200.3:5000/?launchApp=SYNO.Foto.AppInstance#/shared_space/folder/1
         target: newtab
         id: 0_1255_smithfamilyphotos
       - title: Komga
@@ -36,19 +38,22 @@ sections:
         id: 1_1255_komga
       - title: Meshy
         description: AI 3D Model Creation (Online)
-        icon: https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@latest/dark/meshy-color.png
+        icon: >-
+          https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@latest/dark/meshy-color.png
         url: https://www.meshy.ai/discover
         target: newtab
         id: 2_1255_meshy
       - title: OnShape
         description: Online Web CAD
-        icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/onshape-dark.png
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/onshape-dark.png
         url: https://cad.onshape.com/
         target: newtab
         id: 3_1255_onshape
       - title: GitHub
         description: My GitHub Page
-        icon: https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@latest/dark/github.png
+        icon: >-
+          https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@latest/dark/github.png
         url: https://github.com/
         target: newtab
         id: 4_1255_github
@@ -92,18 +97,21 @@ sections:
         id: 2_529_librenms
       - title: mobaXterm
         description: (installed on local client and configured)
-        icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/mobaxterm.png
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/mobaxterm.png
         url: mobaxterm-launch://
         target: sametab
         id: 3_529_mobaxterm
       - title: CMD Admin
         description: (configured on Client)
-        icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/terminal.png
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/terminal.png
         url: admin-cmd://
         target: sametab
         id: 4_529_cmdadmin
   - name: Network Admin
-    icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/networking-toolbox.png
+    icon: >-
+      https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/networking-toolbox.png
     displayData:
       sortBy: alphabetical
       rows: 3
@@ -124,13 +132,15 @@ sections:
         id: 1_1267_tgtsswitch
       - title: AdGuard Home
         description: DNS filter and Reverse Proxy
-        icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/adguard-home.png
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/adguard-home.png
         url: https://dns.shome/#
         target: newtab
         id: 2_1267_adguardhome
       - title: Traefik Proxy
         description: Rev Proxy, TSL Cert Manage
-        icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/traefik-proxy.png
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/traefik-proxy.png
         url: https://traefik.shome/dashboard/#/
         target: newtab
         id: 3_1267_traefikproxy
@@ -141,7 +151,8 @@ sections:
         target: newtab
         id: 4_1267_tailscale
   - name: Server Admin
-    icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/serverjockey.png
+    icon: >-
+      https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/serverjockey.png
     displayData:
       sortBy: alphabetical
       rows: 3
@@ -168,7 +179,8 @@ sections:
         id: 2_1152_webmin
       - title: Home Assistant
         description: Smith's Home Automation
-        icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/home-assistant-alt.png
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/home-assistant-alt.png
         url: http://192.168.200.13:8123/
         target: newtab
         id: 3_1152_homeassistant
@@ -199,7 +211,8 @@ sections:
         target: newtab
         id: 2_725_synologynas
   - name: Docker
-    icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/docker-moby.png
+    icon: >-
+      https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/docker-moby.png
     displayData:
       sortBy: alphabetical
       rows: 3
@@ -213,19 +226,22 @@ sections:
         id: 0_600_whatsupdoc
       - title: Portainer BE
         description: OPTIPLEX-DOCKER Docker Management
-        icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/portainer-be-dark.png
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/portainer-be-dark.png
         url: http://192.168.200.98:9000/#!/auth
         target: newtab
         id: 1_600_portainerbe
       - title: Portainer BE
         description: OPTIPLEX-TWO and SMIDDLEWARE  Docker Management
-        icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/portainer-be-dark.png
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/portainer-be-dark.png
         url: https://portainer-2.shome/#!/auth
         target: newtab
         id: 2_600_portainerbe
       - title: Portainer BE
         description: NAS Docker Management
-        icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/portainer-be-dark.png
+        icon: >-
+          https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/portainer-be-dark.png
         url: http://192.168.200.3:10000/#!/home
         target: newtab
         id: 3_600_portainerbe
