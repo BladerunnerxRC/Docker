@@ -5,7 +5,81 @@ This README documents only the borg-backup application in this folder, including
 ## Files
 
 - `docker_compose.yml`: Runs `ainullcode/borg-ui` with required mounts and FUSE capabilities.
+- `BORG_UI-smiddleware-prep-appdata.sh`: Borg UI script-entity wrapper that triggers remote pre-backup app snapshot prep.
+- `BORG_UI-borgui-config-export-snapshot.sh`: Borg UI script-entity wrapper that creates Borg UI local config export snapshots.
 - `borg-prep-appdata-smiddleware.sh`: Builds a staged snapshot under `/var/backups/borg-apps/latest` for Borg to back up.
+
+## Shell Script Reference
+
+Scripts prefixed with `BORG_UI-` are referenced in Borg UI to create script entities. They are documented in this repo for versioning and auditing, then configured in the Borg UI Scripts section.
+
+### `BORG_UI-smiddleware-prep-appdata.sh`
+
+Purpose:
+
+- Runs a remote pre-backup snapshot workflow on smiddleware before backup tasks continue.
+- Calls `/usr/local/sbin/borg-prep-appdata-smiddleware.sh` over SSH on `root@192.168.200.52`.
+
+Behavior:
+
+- Uses non-interactive SSH (`BatchMode=yes`) and accepts new host keys automatically.
+- Prints start/completion markers for job logs.
+
+Borg UI script entity metadata (from header comments):
+
+- Name: `smiddleware-prep-appdata`
+- Description: Pre-backup app-data snapshot for smiddleware Docker services
+- Run-on: Always (regardless of result)
+- Time-out: 300 seconds (5 minutes)
+
+Screenshot placeholder(s):
+
+- `[Screenshot Placeholder: Borg UI script entity - smiddleware-prep-appdata configuration]`
+- `[Screenshot Placeholder: Borg UI run history/output - smiddleware-prep-appdata]`
+
+### `BORG_UI-borgui-config-export-snapshot.sh`
+
+Purpose:
+
+- Creates a local Borg UI configuration export snapshot before Borg UI self-backup.
+- Captures key Borg UI state from `/data` and exports it to `/local/borgui-config-export`.
+
+Behavior:
+
+- Creates timestamped snapshots (`snapshot-YYYYmmdd-HHMMSS`) plus a refreshed `latest` copy.
+- Uses SQLite backup API (via Python) to produce a consistent `borg.db` snapshot.
+- Copies `.secret_key`, optional SSH keys, recent logs, and a lightweight file inventory.
+- Retains the latest 14 snapshots and removes older ones.
+
+Borg UI script entity metadata (from header comments):
+
+- Name: `borgui-config-export-snapshot`
+- Description: Creates regular Borg UI config export snapshot before Borg UI self-backup
+- Run-on: Always (regardless of result)
+- Time-out: 300 seconds (5 minutes)
+
+Screenshot placeholder(s):
+
+- `[Screenshot Placeholder: Borg UI script entity - borgui-config-export-snapshot configuration]`
+- `[Screenshot Placeholder: Borg UI run history/output - borgui-config-export-snapshot]`
+
+### `borg-prep-appdata-smiddleware.sh`
+
+Purpose:
+
+- Creates an app-consistent snapshot for Borg to back up from `/var/backups/borg-apps/latest`.
+
+Behavior:
+
+- Collects system metadata, package list, and Docker inventory.
+- Collects config/data snapshots from AdGuard, Traefik, Portracker, and Dashy.
+- Performs SQLite-safe backup for Portracker DB when present.
+- Publishes the snapshot atomically by staging to a temp directory, then moving into `latest`.
+
+Run context:
+
+- Usually executed on the target host as `/usr/local/sbin/borg-prep-appdata-smiddleware.sh`.
+- Can be run manually before backup: `sudo ./borg-prep-appdata-smiddleware.sh`
 
 ## What This Stack Does
 
