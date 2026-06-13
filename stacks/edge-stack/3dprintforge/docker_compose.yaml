@@ -8,13 +8,11 @@ services:
     restart: unless-stopped
 
     environment:
-      NODE_ENV: production
-      TZ: America/New_York
-
-      # Optional: initial/default printer values
-      BAMBU_IP: 192.168.1.100
-      BAMBU_SERIAL: 01S00A000000000
-      BAMBU_ACCESS_CODE: 12345678
+      NODE_ENV: ${NODE_ENV}
+      TZ: ${TZ}
+      BAMBU_IP: ${BAMBU_IP}
+      BAMBU_SERIAL: ${BAMBU_SERIAL}
+      BAMBU_ACCESS_CODE: ${BAMBU_ACCESS_CODE}
 
     volumes:
       - /opt/stacks/3dprintforge/data:/app/data
