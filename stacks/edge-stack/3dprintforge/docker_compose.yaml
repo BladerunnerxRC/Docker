@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  3dprintforge:
+    image: ghcr.io/skynett81/3dprintforge:latest
+    container_name: 3dprintforge
+    network_mode: host
+    restart: unless-stopped
+
+    environment:
+      NODE_ENV: production
+      TZ: America/New_York
+
+      # Optional: initial/default printer values
+      BAMBU_IP: 192.168.1.100
+      BAMBU_SERIAL: 01S00A000000000
+      BAMBU_ACCESS_CODE: 12345678
+
+    volumes:
+      - /opt/stacks/3dprintforge/data:/app/data
+      - /opt/stacks/3dprintforge/config.json:/app/config.json
+      - /opt/stacks/3dprintforge/certs:/app/certs
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
