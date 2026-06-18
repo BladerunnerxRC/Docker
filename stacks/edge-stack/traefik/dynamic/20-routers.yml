@@ -13,7 +13,10 @@ http:
       entryPoints: ["websecure"]
       tls:
         certResolver: stepca
-      middlewares: ["security-headers", "compression"]
+      middlewares:
+          - security-headers
+          - haos-forwarded-headers
+          - compression
       service: haos
 
     komga:
