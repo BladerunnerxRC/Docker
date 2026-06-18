@@ -2,11 +2,24 @@ http:
   middlewares:
     security-headers:
       headers:
-        frameDeny: true
+
+        # Home Assistant ingress/add-on compatibility
+        # Do NOT enable frameDeny on HA routes
+        frameDeny: false
+
         contentTypeNosniff: true
         browserXssFilter: true
         referrerPolicy: "no-referrer"
         permissionsPolicy: "geolocation=(), microphone=(), camera=()"
+
+    # Ensure Home Assistant sees the original HTTPS request
+    haos-forwarded-headers:
+      headers:
+        customRequestHeaders:
+          X-Forwarded-Proto: "https"
+          X-Forwarded-Host: "haos.shome"
+          X-Forwarded-Port: "443"
+
 
         # Traefik v3 HSTS fields
         stsSeconds: 63072000
