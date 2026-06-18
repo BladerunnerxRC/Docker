@@ -8,14 +8,6 @@ http:
       middlewares: ["security-headers", "compression"]
       service: dockhand
 
-    grafana:
-      rule: "Host(`grafana.shome`)"
-      entryPoints: ["websecure"]
-      tls:
-        certResolver: stepca
-      middlewares: ["security-headers", "compression"]
-      service: grafana
-
     haos:
       rule: "Host(`haos.shome`)"
       entryPoints: ["websecure"]
@@ -96,13 +88,13 @@ http:
       middlewares: ["security-headers", "compression"]
       service: borg-optiplex-docker
 
-    nocodb:
-      rule: "Host(`nocodb.shome`)"
+    wud:
+      rule: "Host(`wud.shome`)"
       entryPoints: ["websecure"]
       tls:
         certResolver: stepca
       middlewares: ["security-headers", "compression"]
-      service: nocodb
+      service: wud
 
     k3s-catchall:
       rule: "HostRegexp(`{name:[a-z0-9-]+}.shome`)"
@@ -113,11 +105,3 @@ http:
       middlewares: ["security-headers", "compression"]
       service: k3s-traefik
 
-# The following is currently running on test Ubuntu VMware VM
-    rancher:
-      rule: "Host(`rancher.shome`)"
-      entryPoints: ["websecure"]
-      tls:
-        certResolver: stepca
-      middlewares: ["security-headers", "compression"]
-      service: rancher
