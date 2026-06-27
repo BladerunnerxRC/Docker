@@ -1,0 +1,74 @@
+services:
+  bambuddy:
+    image: ghcr.io/maziggy/bambuddy:latest
+    container_name: bambuddy
+    cap_add:
+      - NET_BIND_SERVICE
+    # HOST MODE (Linux recommended for printer discovery via SSDP multicast)
+    # Comment this out and uncomment "ports:" below if running on macOS/Windows
+    # or when Bambuddy shares a host with other services (NAS, Unraid, Synology).
+    network_mode: host
+    #
+    # BRIDGE MODE — uncomment if you cannot use host networking.
+    # Printer discovery won't work; add printers manually by IP.
+    #ports:
+    #  - "${PORT:-8000}:8000"
+    #  - "3000:3000"          # Virtual printer bind/detect
+    #  - "3002:3002"          # Virtual printer bind/detect
+    #  - "8883:8883"          # Virtual printer MQTT
+    #  - "990:990"            # Virtual printer FTP control
+    #  - "6000:6000"          # Virtual printer file transfer tunnel
+    #  - "322:322"            # Virtual printer RTSP camera
+    #  - "2024-2026:2024-2026" # Virtual printer proprietary ports (A1/P1S)
+    #  - "50000-50029:50000-50029" # FTP passive data (3 VPs × 10-port slice)
+    volumes:
+      - bambuddy_data:/app/data
+      - bambuddy_logs:/app/logs
+      # Mount backup output to external storage (optional)
+      #- /path/to/nas/bambuddy-backups:/app/data/backups
+      # Tailscale socket for Let's Encrypt cert support (optional)
+      #- /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock
+      # Custom CA certificate for self-signed Home Assistant (optional)
+      #- /path/to/certs:/usr/local/share/ca-certificates
+      # External library folders (also set BAMBUDDY_EXTERNAL_ROOTS below)
+      #- /mnt/nas/3d-prints:/external/nas:ro
+    environment:
+      - TZ=${TZ:-Europe/Berlin}
+      # Match your host user: run `id -u` and `id -g` to find your values
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      # Web UI port
+      - PORT=${PORT:-8010}
+      # Required for FTP passive mode when running in bridge mode
+      # Set to the Docker host's LAN IP address
+      #- VIRTUAL_PRINTER_PASV_ADDRESS=${VIRTUAL_PRINTER_PASV_ADDRESS}
+      # External PostgreSQL (optional — SQLite is used by default)
+      # Example: postgresql+asyncpg://bambuddy:password@bambuddy-db:5432/bambuddy
+      #- DATABASE_URL=${DATABASE_URL}
+      # Slicer API sidecar URL (optional)
+      #- SLICER_API_URL=${SLICER_API_URL:-http://localhost:3003}
+      # MFA encryption key — auto-generated on first start if unset
+      #- MFA_ENCRYPTION_KEY=${MFA_ENCRYPTION_KEY}
+      # External library roots (colon-separated container paths, must match volume mounts)
+      #- BAMBUDDY_EXTERNAL_ROOTS=${BAMBUDDY_EXTERNAL_ROOTS}
+      # Enable system trust store for custom CA certificates
+      #- USE_SYSTEM_TRUST_STORE=true
+    restart: unless-stopped
+
+  # Optional: PostgreSQL database
+  # Uncomment this block and set DATABASE_URL above to use Postgres instead of SQLite.
+  bambuddy-db:
+    image: postgres:16-alpine
+    container_name: bambuddy-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-bambuddy}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - POSTGRES_DB=${POSTGRES_DB:-bambuddy}
+    volumes:
+      - bambuddy_pgdata:/var/lib/postgresql/data
+
+volumes:
+  bambuddy_data:
+  bambuddy_logs:
+  bambuddy_pgdata:
