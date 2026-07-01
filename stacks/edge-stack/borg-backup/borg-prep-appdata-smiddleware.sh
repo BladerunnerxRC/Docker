@@ -22,10 +22,12 @@ set -Eeuo pipefail
 umask 077
 
 BASE="/var/backups/borg-apps"
-TMP="$(mktemp -d "${BASE}/.tmp.XXXXXX")"
 LATEST="${BASE}/latest"
 
 mkdir -p "$BASE"
+TMP="$(mktemp -d "${BASE}/.tmp.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+
 mkdir -p "$TMP"/{metadata,docker,adguard,traefik,portracker,dashy}
 
 echo "Preparing app-consistent backup data for smiddleware..."
