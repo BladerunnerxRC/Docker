@@ -1,0 +1,19 @@
+# MariaDB backend for Kodi shared library
+# Keep this file OUT of version control (add to .gitignore) — it holds secrets.
+
+# --- Credentials ---
+MARIADB_ROOT_PASSWORD=change_this_root_password
+MARIADB_USER=kodi
+MARIADB_PASSWORD=change_this_kodi_password
+
+# --- Runtime ---
+TZ=America/New_York
+MARIADB_PORT=3306
+
+# --- Tuning ---
+# Raise if your NAS has RAM to spare (e.g. 1G, 2G)
+INNODB_BUFFER_POOL_SIZE=512M
+
+# --- Backups ---
+# How many days of nightly dumps to keep
+BACKUP_RETENTION_DAYS=14

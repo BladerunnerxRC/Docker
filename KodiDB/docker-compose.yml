@@ -1,0 +1,58 @@
+services:
+  mariadb-kodi:
+    image: mariadb:11
+    container_name: mariadb-kodi
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+      MARIADB_USER: ${MARIADB_USER}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD}
+      TZ: ${TZ}
+    ports:
+      - "${MARIADB_PORT}:3306"
+    volumes:
+      - kodi-db-data:/var/lib/mysql                  # persistent DB storage (local disk)
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --innodb-buffer-pool-size=${INNODB_BUFFER_POOL_SIZE}
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  mariadb-kodi-backup:
+    image: mariadb:11
+    container_name: mariadb-kodi-backup
+    restart: unless-stopped
+    depends_on:
+      - mariadb-kodi
+    environment:
+      TZ: ${TZ}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS}
+    volumes:
+      - kodi-db-backups:/backups                     # backup dumps (NAS via NFS)
+    entrypoint: >
+      bash -c '
+      while true; do
+        mariadb-dump -h mariadb-kodi -uroot -p"$$MARIADB_ROOT_PASSWORD" \
+          --all-databases --single-transaction --events \
+          | gzip > /backups/kodi-$$(date +%Y%m%d-%H%M%S).sql.gz;
+        find /backups -name "kodi-*.sql.gz" -mtime +$$BACKUP_RETENTION_DAYS -delete;
+        sleep 86400;
+      done'
+
+volumes:
+  # DB data on the Docker host's local disk (safe for InnoDB).
+  # Docker-managed named volume lives under /var/lib/docker/volumes/.
+  kodi-db-data:
+
+  # Backups on the NAS via NFS.
+  kodi-db-backups:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=${NAS_HOST},nfsvers=4,rw,hard,noatime"
+      device: ":${NAS_EXPORT}/backups"
