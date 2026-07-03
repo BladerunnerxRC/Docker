@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash -n borg-backup-survey.sh)",
+      "Bash(bash borg-backup-survey.sh --help)",
+      "Bash(bash borg-backup-survey.sh --from x --report-only)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(bash harness2.sh)",
+      "Bash(echo \"HARNESS_EXIT=$?\")",
+      "Bash(bash -x harness2.sh)",
+      "Bash(sed 's/\\\\[ -t 0 \\\\]/true/g' \"c:/Users/Thoma/OneDrive/Documents/GitHub/Docker/borg-backup/borg-backup-survey.sh\")",
+      "Bash(mkdir -p borg-survey-testsrv-1/raw)",
+      "Bash(cp ../out2/raw/survey-state.sh borg-survey-testsrv-1/raw/)",
+      "Bash(bash survey-tty.sh --name testsrv --address 10.0.0.5)",
+      "Bash(bash survey-tty.sh --name testsrv)"
+    ]
+  }
+}

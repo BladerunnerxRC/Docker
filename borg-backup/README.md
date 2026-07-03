@@ -8,6 +8,7 @@ This README documents only the borg-backup application in this folder, including
 - `BORG_UI-smiddleware-prep-appdata.sh`: Borg UI script-entity wrapper that triggers remote pre-backup app snapshot prep.
 - `BORG_UI-borgui-config-export-snapshot.sh`: Borg UI script-entity wrapper that creates Borg UI local config export snapshots.
 - `borg-prep-appdata-smiddleware.sh`: Builds a staged snapshot under `/var/backups/borg-apps/latest` for Borg to back up.
+- `borg-backup-survey.sh`: Surveys an Ubuntu server (Docker, databases, non-Docker apps, Tailscale, Kubernetes, etc.), reports what Borg can back up, and optionally generates per-server versions of the two scripts above.
 
 ## Shell Script Reference
 
@@ -80,6 +81,40 @@ Run context:
 
 - Usually executed on the target host as `/usr/local/sbin/borg-prep-appdata-smiddleware.sh`.
 - Can be run manually before backup: `sudo ./borg-prep-appdata-smiddleware.sh`
+
+### `borg-backup-survey.sh`
+
+Purpose:
+
+- Surveys a new Ubuntu server and reports what can be backed up by Borg, then optionally generates that server's custom `borg-prep-appdata-<name>.sh` and `BORG_UI-<name>-prep-appdata.sh`.
+
+What it inspects:
+
+- System identity, disks, packages, cron jobs
+- Docker: containers (Compose-managed and standalone `docker run` containers), images, volumes, networks, Compose projects, bind-mounted app data dirs (with sizes)
+- Databases in containers (Postgres, MySQL/MariaDB, MongoDB, Redis, InfluxDB, Elasticsearch, ...) and SQLite files in app dirs
+- Applications outside Docker via systemd (web servers, databases, media servers, monitoring, DNS/DHCP, VPN, ...)
+- Tailscale state, Kubernetes (k3s / microk8s / kubeadm), LXD, libvirt/KVM, ZFS
+
+Usage (run on the target server):
+
+```bash
+sudo ./borg-backup-survey.sh                 # survey + report, then prompt to generate scripts
+sudo ./borg-backup-survey.sh --report-only   # report only
+sudo ./borg-backup-survey.sh --generate --name myserver --address 192.168.200.60
+sudo ./borg-backup-survey.sh --from ./borg-survey-myserver-20260703-110322   # regenerate scripts from a previous survey's raw data (no re-survey)
+```
+
+Each survey saves its collected state to `raw/survey-state.sh`. On the next interactive run, if a previous survey directory for the host is found, the script asks whether to re-run the survey or reuse the existing raw data to generate the scripts (`--from DIR` does the same non-interactively).
+
+Output (in `./borg-survey-<name>-<timestamp>/`):
+
+- `REPORT.md` — what was found, what Borg should back up, consistency caveats, suggested excludes
+- `raw/` — raw inventory data backing the report
+- `borg-prep-appdata-<name>.sh` — generated prep script following the same staged/atomic-publish pattern as the smiddleware one, with DB-safe dumps (pg_dumpall, mysqldump, mongodump, SQLite `.backup`, k3s etcd-snapshot) for everything detected
+- `BORG_UI-<name>-prep-appdata.sh` — generated Borg UI script-entity wrapper (SSH trigger)
+
+The generated scripts are starting points reflecting what was detected at survey time — review rsync sources, database credentials, and any commented-out large directories before deploying to `/usr/local/sbin/`.
 
 ## What This Stack Does
 
