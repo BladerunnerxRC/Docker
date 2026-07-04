@@ -12,7 +12,9 @@
       "Bash(mkdir -p borg-survey-testsrv-1/raw)",
       "Bash(cp ../out2/raw/survey-state.sh borg-survey-testsrv-1/raw/)",
       "Bash(bash survey-tty.sh --name testsrv --address 10.0.0.5)",
-      "Bash(bash survey-tty.sh --name testsrv)"
+      "Bash(bash survey-tty.sh --name testsrv)",
+      "Read(//c/Users/Thoma/OneDrive/Documents/GitHub/Docker/**)",
+      "Read(//c/Users/Thoma/OneDrive/Documents/GitHub/Docker/Test_Output/**)"
     ]
   }
 }
