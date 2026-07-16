@@ -8,7 +8,7 @@ This README documents only the borg-backup application in this folder, including
 - `BORG_UI-smiddleware-prep-appdata.sh`: Borg UI script-entity wrapper that triggers remote pre-backup app snapshot prep.
 - `BORG_UI-borgui-config-export-snapshot.sh`: Borg UI script-entity wrapper that creates Borg UI local config export snapshots.
 - `borg-prep-appdata-smiddleware.sh`: Builds a staged snapshot under `/var/backups/borg-apps/latest` for Borg to back up.
-- `borg-backup-survey.sh`: Surveys an Ubuntu server (Docker, databases, non-Docker apps, Tailscale, Kubernetes, etc.), reports what Borg can back up, and optionally generates per-server versions of the two scripts above.
+- `borg-backup-survey.sh`: Surveys an Ubuntu server (Docker, databases, non-Docker apps, Tailscale, Kubernetes, etc.), reports what Borg can back up, produces a `BORGUI-SETUP-<name>.md` sheet with every value needed to configure the server in Borg UI (repo, script entity, backup plan, excludes, retention), and optionally generates per-server versions of the two scripts above.
 
 ## Shell Script Reference
 
@@ -86,7 +86,7 @@ Run context:
 
 Purpose:
 
-- Surveys a new Ubuntu server and reports what can be backed up by Borg, then optionally generates that server's custom `borg-prep-appdata-<name>.sh` and `BORG_UI-<name>-prep-appdata.sh`.
+- Surveys a new Ubuntu server and reports what can be backed up by Borg, writes a Borg UI setup sheet (`BORGUI-SETUP-<name>.md`) with everything needed to configure the server in the GUI, then optionally generates that server's custom `borg-prep-appdata-<name>.sh` and `BORG_UI-<name>-prep-appdata.sh`.
 
 What it inspects:
 
@@ -110,11 +110,32 @@ Each survey saves its collected state to `raw/survey-state.sh`. On the next inte
 Output (in `./borg-survey-<name>-<timestamp>/`):
 
 - `REPORT.md` — what was found, what Borg should back up, consistency caveats, suggested excludes
+- `BORGUI-SETUP-<name>.md` — Borg UI setup sheet (see below); produced on every run, including `--report-only` and `--from`
 - `raw/` — raw inventory data backing the report
 - `borg-prep-appdata-<name>.sh` — generated prep script following the same staged/atomic-publish pattern as the smiddleware one, with DB-safe dumps (pg_dumpall, mysqldump, mongodump, SQLite `.backup`, k3s etcd-snapshot) for everything detected
 - `BORG_UI-<name>-prep-appdata.sh` — generated Borg UI script-entity wrapper (SSH trigger)
 
 The generated scripts are starting points reflecting what was detected at survey time — review rsync sources, database credentials, and any commented-out large directories before deploying to `/usr/local/sbin/`.
+
+#### The Borg UI setup sheet (`BORGUI-SETUP-<name>.md`)
+
+A fill-in sheet built from the survey data; each section maps to a screen in the Borg UI GUI:
+
+1. **Prerequisites** — exact `scp`/`chmod` commands to deploy the prep script and the SSH-key check from inside the `borg-backup` container
+2. **Repository** — name, in-container path (`/local/<name>`), `repokey-blake2` encryption, passphrase generation, the volume line to add to `docker_compose.yml`, and the `borg key export` command
+3. **Script entity** — name, description, run-on, and timeout matching the generated `BORG_UI-<name>-prep-appdata.sh` wrapper
+4. **Backup plan** — archive name template, compression, schedule, source paths with sizes at survey time, and exclude patterns in borg `--exclude` syntax with reasons
+5. **Retention/prune** — suggested keep-daily/weekly/monthly/yearly values plus compact
+6. **Consistency notes** — databases dumped by the prep script, SQLite files safe-copied, non-Docker services, standalone containers, and Tailscale/Kubernetes secret warnings (only sections that apply to the surveyed server appear)
+7. **First-run verification** — checklist covering the prep script, first backup, key export, and a test restore
+
+Typical onboarding flow for a new server:
+
+1. Run `sudo ./borg-backup-survey.sh --generate` on the server.
+2. Review `REPORT.md` and the generated prep script; deploy it per section 1 of the setup sheet.
+3. Add the repo volume line from section 2 to `docker_compose.yml` and recreate the stack.
+4. Walk through sections 2–5 in the Borg UI GUI, copying values from the sheet.
+5. Run the section 7 verification checklist.
 
 ## What This Stack Does
 

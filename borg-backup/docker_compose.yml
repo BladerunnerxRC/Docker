@@ -26,6 +26,7 @@ services:
 
       - /mnt/backups/borgrepo:/local/shared:rw
       - /mnt/borg_smiddleware:/local/smiddleware:rw
+      - /mnt/borg_optiplex-two:/local/optiplex-two:rw
 
       - /srv/borg-restore:/restore:rw
 

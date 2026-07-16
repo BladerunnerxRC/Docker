@@ -45,6 +45,10 @@
 #
 # Output:
 #   <output>/REPORT.md                            Human-readable survey report
+#   <output>/BORGUI-SETUP-<name>.md               Borg UI setup sheet: every value needed to
+#                                                 configure this server in the Borg UI GUI
+#                                                 (repository, script entity, backup plan
+#                                                 source paths, excludes, schedule, retention)
 #   <output>/raw/...                              Raw inventory data backing the report
 #   <output>/borg-prep-appdata-<name>.sh          Generated prep script (review before deploying!)
 #   <output>/BORG_UI-<name>-prep-appdata.sh       Generated Borg UI wrapper script
@@ -976,6 +980,234 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Generator: BORGUI-SETUP-<name>.md - one-stop sheet with every value needed to
+# configure this server in the Borg UI GUI: repository, script entity, backup
+# plan (source paths, excludes, schedule), and retention/prune policy.
+# ---------------------------------------------------------------------------
+generate_borgui_setup() {
+  local out="${OUT_DIR}/BORGUI-SETUP-${NAME}.md"
+  echo "==> Writing Borg UI setup sheet to ${out}"
+
+  # Source paths mirror the "What Borg should back up" list in REPORT.md.
+  local -a src_paths=("/var/backups/borg-apps/latest" "/etc")
+  local p d
+  if [ "$DOCKER_PRESENT" -eq 1 ]; then
+    src_paths+=("/var/lib/docker/volumes")
+    for p in "${!COMPOSE_PROJECTS[@]}"; do src_paths+=("${COMPOSE_PROJECTS[$p]}"); done
+    for d in "${APP_DIRS[@]}"; do src_paths+=("$d"); done
+  fi
+
+  # Exclude patterns in borg --exclude syntax: "pattern|reason".
+  local -a excludes=(
+    "sh:/var/backups/borg-apps/.tmp.*|in-progress prep staging dirs - only \`latest\` should be captured"
+    "sh:**/*.db-wal|SQLite write-ahead logs - the prep script stages consistent copies instead"
+    "sh:**/*.db-shm|SQLite shared-memory files (companions of .db-wal)"
+    "sh:**/.cache|hidden application caches (recreatable)"
+    "sh:**/lost+found|filesystem repair artifacts"
+  )
+  if [ "$DOCKER_PRESENT" -eq 1 ]; then
+    excludes+=(
+      "/var/lib/docker/overlay2|container image/layer store - recreatable with \`docker pull\`"
+      "/var/lib/docker/buildkit|Docker build cache - recreatable"
+      "/var/lib/docker/tmp|Docker scratch space"
+      "sh:/var/lib/docker/containers/*/*-json.log|container stdout logs - skip unless you audit them"
+    )
+  fi
+
+  {
+    echo "# Borg UI Setup Sheet - ${NAME}"
+    echo
+    echo "- Generated: $(date -Is)"
+    echo "- Server: ${NAME} (\`${ADDRESS}\`)"
+    echo "- Companion files: \`REPORT.md\` (full survey), \`borg-prep-appdata-${NAME}.sh\`,"
+    echo "  \`BORG_UI-${NAME}-prep-appdata.sh\` (generated with \`--generate\`)"
+    echo
+    echo "Work through the sections top to bottom; each maps to a screen in the Borg UI GUI."
+    echo
+
+    echo "## 1. Prerequisites (before touching the GUI)"
+    echo
+    echo "1. Deploy the prep script on ${NAME}:"
+    echo
+    echo '   ```bash'
+    echo "   scp borg-prep-appdata-${NAME}.sh root@${ADDRESS}:/usr/local/sbin/borg-prep-appdata-${NAME}.sh"
+    echo "   ssh root@${ADDRESS} 'chown root:root /usr/local/sbin/borg-prep-appdata-${NAME}.sh && chmod 700 /usr/local/sbin/borg-prep-appdata-${NAME}.sh'"
+    echo '   ```'
+    echo
+    echo "2. Give the Borg UI container SSH access to \`root@${ADDRESS}\` (Borg UI -> Settings -> SSH keys,"
+    echo "   or reuse the existing key), then verify non-interactive login from inside the container:"
+    echo
+    echo '   ```bash'
+    echo "   docker exec -it borg-backup ssh -o BatchMode=yes root@${ADDRESS} true && echo OK"
+    echo '   ```'
+    echo
+    echo "3. Test the prep script once by hand:"
+    echo
+    echo '   ```bash'
+    echo "   ssh root@${ADDRESS} /usr/local/sbin/borg-prep-appdata-${NAME}.sh"
+    echo "   ssh root@${ADDRESS} ls -la /var/backups/borg-apps/latest"
+    echo '   ```'
+    echo
+
+    echo "## 2. Repository (Borg UI -> Repositories -> Add)"
+    echo
+    echo "| GUI field | Value |"
+    echo "| --- | --- |"
+    echo "| Name | \`${NAME}\` |"
+    echo "| Location (in-container path) | \`/local/${NAME}\` |"
+    echo "| Encryption | \`repokey-blake2\` |"
+    echo "| Passphrase | generate with \`openssl rand -base64 32\`; store in your password manager |"
+    echo
+    echo "The in-container path needs a host directory behind it - add this line to the"
+    echo "\`borg-ui\` service volumes in \`docker_compose.yml\` and recreate the container:"
+    echo
+    echo '```yaml'
+    echo "      - /mnt/borg_${NAME}:/local/${NAME}:rw"
+    echo '```'
+    echo
+    echo "(Alternative: a remote repo over SSH, e.g. \`ssh://borg@backup-host:22/./repos/${NAME}\` - then no volume line is needed.)"
+    echo
+    echo "After the repo is initialized, export the key and store it OUTSIDE the repo -"
+    echo "with \`repokey\` the key lives in the repo config, so a lost/corrupt repo also loses the key:"
+    echo
+    echo '```bash'
+    echo "docker exec -it borg-backup borg key export /local/${NAME} /local/borgui-config-export/${NAME}-borg-key.txt"
+    echo '```'
+    echo
+
+    echo "## 3. Script entity (Borg UI -> Scripts -> Add)"
+    echo
+    echo "| GUI field | Value |"
+    echo "| --- | --- |"
+    echo "| Name | \`${NAME}-prep-appdata\` |"
+    echo "| Description | Pre-backup app-data snapshot for ${NAME} services |"
+    echo "| Run-on | Always - Regardless of result |"
+    echo "| Time-out | 300 seconds (5 minutes) |"
+    echo "| Script content | paste from \`BORG_UI-${NAME}-prep-appdata.sh\` (the \`#!/bin/bash\` block) |"
+    echo
+
+    echo "## 4. Backup plan (Borg UI -> Backups -> Add)"
+    echo
+    echo "| GUI field | Value |"
+    echo "| --- | --- |"
+    echo "| Plan name | \`${NAME}-daily\` |"
+    echo "| Repository | \`${NAME}\` |"
+    echo "| Archive name template | \`${NAME}-{now:%Y-%m-%d_%H%M%S}\` |"
+    echo "| Compression | \`zstd,3\` |"
+    echo "| Schedule | daily at 02:00 (cron \`0 2 * * *\`) - stagger if multiple servers share the Borg host |"
+    echo "| Pre-backup script | \`${NAME}-prep-appdata\` (section 3) - **must run before every backup** |"
+    echo
+    echo "### Source paths"
+    echo
+    echo "| Path | Size at survey time | Why |"
+    echo "| --- | --- | --- |"
+    local why
+    for d in "${src_paths[@]}"; do
+      case "$d" in
+        /var/backups/borg-apps/latest) why="app-consistent snapshot staged by the prep script (DB dumps, metadata, configs)" ;;
+        /etc)                          why="system configuration" ;;
+        /var/lib/docker/volumes)       why="named Docker volumes (DB volumes made consistent by the dumps above)" ;;
+        *)
+          why="bind-mounted app data"
+          for p in "${!COMPOSE_PROJECTS[@]}"; do
+            [ "$d" = "${COMPOSE_PROJECTS[$p]}" ] && why="compose project '${p}'"
+          done
+          ;;
+      esac
+      echo "| \`${d}\` | $(dir_size "$d") | ${why} |"
+    done
+    echo
+    echo "### Exclude patterns"
+    echo
+    echo "Paste one per line into the plan's exclude list (borg \`--exclude\` syntax; \`sh:\` = shell-style glob):"
+    echo
+    echo "| Pattern | Reason |"
+    echo "| --- | --- |"
+    local e
+    for e in "${excludes[@]}"; do
+      echo "| \`$(echo "$e" | cut -d'|' -f1)\` | $(echo "$e" | cut -d'|' -f2) |"
+    done
+    echo
+    echo "Also review for: large re-downloadable media, transcode/thumbnail directories"
+    echo "(Plex/Jellyfin), and per-app \`cache/\` directories inside the paths above."
+    echo
+
+    echo "## 5. Retention / prune (on the same backup plan)"
+    echo
+    echo "| GUI field | Value |"
+    echo "| --- | --- |"
+    echo "| Keep daily | 7 |"
+    echo "| Keep weekly | 4 |"
+    echo "| Keep monthly | 6 |"
+    echo "| Keep yearly | 1 |"
+    echo "| Compact after prune | yes (reclaims repo space) |"
+    echo
+
+    echo "## 6. Consistency notes for this server"
+    echo
+    if [ "${#DB_CONTAINERS[@]}" -gt 0 ]; then
+      echo "### Databases dumped by the prep script"
+      echo
+      echo "Raw copies of live DB files are not crash-consistent; restores must use these dumps"
+      echo "from \`/var/backups/borg-apps/latest/databases/\`:"
+      echo
+      echo "| Container | Engine | Notes |"
+      echo "| --- | --- | --- |"
+      for e in "${DB_CONTAINERS[@]}"; do
+        echo "| $(echo "$e" | cut -d'|' -f1) | $(echo "$e" | cut -d'|' -f2) | $(echo "$e" | cut -d'|' -f3) |"
+      done
+      echo
+    fi
+    if [ "${#SQLITE_FILES[@]}" -gt 0 ]; then
+      echo "### SQLite databases (safe-copied by the prep script)"
+      echo
+      local f
+      for f in "${SQLITE_FILES[@]}"; do echo "- \`${f}\`"; done
+      echo
+    fi
+    if [ "${#NATIVE_SERVICES[@]}" -gt 0 ]; then
+      echo "### Non-Docker services covered via the prep snapshot"
+      echo
+      for e in "${NATIVE_SERVICES[@]}"; do
+        echo "- $(echo "$e" | cut -d'|' -f1) ($(echo "$e" | cut -d'|' -f2))"
+      done
+      echo
+    fi
+    if [ "${#STANDALONE_CONTAINERS[@]}" -gt 0 ]; then
+      echo "### Standalone (non-Compose) containers"
+      echo
+      echo "${#STANDALONE_CONTAINERS[@]} container(s) have no compose file; their recreation record is"
+      echo "\`docker/docker-inspect-all.json\` inside the prep snapshot (image, env, mounts, ports)."
+      echo
+    fi
+    if [ "$TAILSCALE_PRESENT" -eq 1 ]; then
+      echo "### Tailscale"
+      echo
+      echo "- Node state (\`${TAILSCALE_STATE:-/var/lib/tailscale}\`) is captured in the prep snapshot - treat the"
+      echo "  archive as SECRET and never restore it to a second machine (duplicate node identity)."
+      echo
+    fi
+    if [ -n "$K8S_KIND" ]; then
+      echo "### Kubernetes (${K8S_KIND})"
+      echo
+      echo "- Datastore snapshot and configs are captured by the prep script; hostPath/local PVs"
+      echo "  on this node should be added to the source paths above (see \`raw/k8s-pv-pvc.txt\`)."
+      echo
+    fi
+
+    echo "## 7. First-run verification"
+    echo
+    echo "- [ ] Prep script runs clean: \`ssh root@${ADDRESS} /usr/local/sbin/borg-prep-appdata-${NAME}.sh\`"
+    echo "- [ ] First backup completes in Borg UI without warnings"
+    echo "- [ ] Archive list shows the new archive and its size looks plausible"
+    echo "- [ ] Repo key exported and stored off-repo (section 2)"
+    echo "- [ ] Test restore of one file (Borg UI mount/extract into \`/restore\`)"
+    echo "- [ ] For each database above: dump file exists and is non-empty in the archive under"
+    echo "      \`var/backups/borg-apps/latest/databases/\`"
+  } > "$out"
+}
+
+# ---------------------------------------------------------------------------
 # Persist collected state so a later run can regenerate scripts without re-surveying
 # ---------------------------------------------------------------------------
 save_state() {
@@ -1047,6 +1279,12 @@ else
   echo
 fi
 
+# The Borg UI setup sheet is purely informational (nothing executes on this host),
+# so it is refreshed on every run - including --report-only and --from runs.
+generate_borgui_setup
+echo "  Borg UI setup sheet: ${OUT_DIR}/BORGUI-SETUP-${NAME}.md"
+echo
+
 DO_GENERATE=0
 case "$MODE" in
   generate) DO_GENERATE=1 ;;
@@ -1075,6 +1313,7 @@ if [ "$DO_GENERATE" -eq 1 ]; then
   echo "Checklist before first use:"
   echo "  - Verify every rsync source path and re-enable any commented-out LARGE directories you want."
   echo "  - Confirm database dump credentials (MySQL/MariaDB may need /root/.my.cnf on the host)."
-  echo "  - Add /var/backups/borg-apps/latest (plus paths listed in REPORT.md) to the Borg job's source paths."
+  echo "  - Configure the repo, script entity, and backup plan in Borg UI using BORGUI-SETUP-${NAME}.md"
+  echo "    (source paths, exclude patterns, schedule, and retention are all listed there)."
   echo "  - Test: sudo ${OUT_DIR}/borg-prep-appdata-${NAME}.sh && ls -la /var/backups/borg-apps/latest"
 fi
