@@ -1,8 +1,13 @@
-# Borg-Backup Application
+# 🗄️ Borg-Backup Application
+
+![Docker Compose](https://img.shields.io/badge/Docker%20Compose-2496ED?logo=docker&logoColor=white)
+![BorgBackup](https://img.shields.io/badge/BorgBackup-00B050?logo=borgbackup&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis%207-DC382D?logo=redis&logoColor=white)
+![Borg UI](https://img.shields.io/badge/UI-ainullcode%2Fborg--ui-8A2BE2)
 
 This README documents only the borg-backup application in this folder, including its Docker Compose stack and local snapshot-prep scripts used by Borg.
 
-## Files
+## 📁 Files
 
 - `docker_compose.yml`: Runs `ainullcode/borg-ui` (plus a `redis` archive-cache sidecar) with required mounts, FUSE capabilities, and hardening (resource limits, healthchecks, log rotation).
 - `BORG_UI-smiddleware-prep-appdata.sh`: Borg UI script-entity wrapper that triggers remote pre-backup app snapshot prep.
@@ -10,7 +15,7 @@ This README documents only the borg-backup application in this folder, including
 - `borg-prep-appdata-smiddleware.sh`: Builds a staged snapshot under `/var/backups/borg-apps/latest` for Borg to back up.
 - `borg-backup-survey.sh`: Surveys an Ubuntu server (Docker, databases, non-Docker apps, Tailscale, Kubernetes, etc.), reports what Borg can back up, produces a `BORGUI-SETUP-<name>.md` sheet with every value needed to configure the server in Borg UI (repo, script entity, backup plan, excludes, retention), and optionally generates per-server versions of the two scripts above.
 
-## Shell Script Reference
+## 📜 Shell Script Reference
 
 Scripts prefixed with `BORG_UI-` are referenced in Borg UI to create script entities. They are documented in this repo for versioning and auditing, then configured in the Borg UI Scripts section.
 
@@ -43,7 +48,7 @@ Screenshot placeholder(s):
 Purpose:
 
 - Creates a local Borg UI configuration export snapshot before Borg UI self-backup.
-- Captures key Borg UI state from `/data` and exports it to `/local/borgui-config-export` (mounted from the host at `/srv/borg-ui-config-export`, see [Host Path Mounts](#host-path-mounts)).
+- Captures key Borg UI state from `/data` and exports it to `/local/borgui-config-export` (mounted from the host at `/srv/borg-ui-config-export`, see [Host Path Mounts](#-host-path-mounts)).
 
 Behavior:
 
@@ -137,7 +142,7 @@ Typical onboarding flow for a new server:
 4. Walk through sections 2–5 in the Borg UI GUI, copying values from the sheet.
 5. Run the section 7 verification checklist.
 
-## What This Stack Does
+## ⚙️ What This Stack Does
 
 - Provides a web UI (`borg-ui`) for running and managing Borg backups.
 - Uses a `redis` sidecar as an archive cache so Borg UI can browse large repositories' archive lists/contents faster.
@@ -147,7 +152,7 @@ Typical onboarding flow for a new server:
 - Separately prepares a consistent app-data snapshot (metadata, Docker inventory, app config/data) before backup runs.
 - Is watched by `wud` (What's Up Docker) for new image versions/digests via container labels.
 
-## Service Details
+## 🧩 Service Details
 
 - Service name: `borg-ui`
 - Container name: `borg-backup`
@@ -168,7 +173,7 @@ Open the UI at:
 - Persistence: AOF enabled (`--appendonly yes`), capped at `512mb` with `allkeys-lru` eviction, backed by the `borgui_redis` named volume.
 - `borg-ui` has `depends_on: redis (condition: service_healthy)`, so it won't start until Redis passes its `redis-cli ping` healthcheck.
 
-## Environment Variables
+## 🌱 Environment Variables
 
 - `TZ`: Container timezone (`America/New_York`).
 - `PORT`: Internal port Borg UI listens on (`8081`).
@@ -176,7 +181,7 @@ Open the UI at:
 - `LOCAL_MOUNT_POINTS`: Comma-separated list of in-container paths Borg UI treats as local repo/restore locations (`/local,/restore`).
 - `REDIS_HOST` / `REDIS_PORT`: Connection info for the `redis` archive-cache sidecar (`redis` / `6379`).
 
-## Host Path Mounts
+## 💾 Host Path Mounts
 
 The compose file currently uses these host paths:
 
@@ -184,8 +189,9 @@ The compose file currently uses these host paths:
 | --- | --- | --- | --- |
 | `/srv/borg-source` | `/source/data` | `ro` | Backup source data |
 | `/opt/borg-ui-empty` | `/source/empty` | `ro` | Empty placeholder source |
-| `/mnt/backups/borgrepo` | `/local/shared` | `rw` | Optiplex Borg repo |
+| `/mnt/backups/borgrepo` | `/local/shared` | `rw` | Shared Borg repo |
 | `/mnt/borg_smiddleware` | `/local/smiddleware` | `rw` | Smiddleware Borg repo |
+| `/mnt/borg_optiplex-two` | `/local/optiplex-two` | `rw` | Optiplex-two Borg repo |
 | `/srv/borg-restore` | `/restore` | `rw` | Restore staging area |
 | `/var/log/borg` | `/logs` | `ro` | Borg job logs |
 | `/srv/borg-ui-config-export` | `/local/borgui-config-export` | `rw` | Borg UI config export snapshots (see `BORG_UI-borgui-config-export-snapshot.sh`) |
@@ -196,16 +202,17 @@ Named volumes:
 - `borgui_cache:/home/borg/.cache/borg` — Borg's own archive/chunk cache.
 - `borgui_redis:/data` (on the `redis` service) — Redis AOF persistence for the archive cache.
 
-If your host paths differ, edit `docker_compose.yml` before first start.
+> [!NOTE]
+> If your host paths differ, edit `docker_compose.yml` before first start. New per-server repo mounts (like `/mnt/borg_optiplex-two`) come from section 2 of each server's `BORGUI-SETUP-<name>.md` setup sheet — add the volume line, then recreate the stack.
 
-## Prerequisites
+## ✅ Prerequisites
 
 - Docker Engine with Compose plugin
 - Host paths above created with proper ownership/permissions
 - FUSE available on host (`/dev/fuse`)
 - AppArmor policy allowing this container setup (`apparmor:unconfined` is configured)
 
-## Start and Stop
+## ▶️ Start and Stop
 
 Start in detached mode:
 
@@ -231,7 +238,7 @@ Stop:
 docker compose -f docker_compose.yml down
 ```
 
-## App Snapshot Prep Script
+## 📸 App Snapshot Prep Script
 
 Run before Borg backup jobs so Borg reads a stable snapshot:
 
@@ -255,7 +262,7 @@ What the script collects:
 
 The script publishes snapshots atomically by staging in a temp directory, then moving into `latest`.
 
-## Scheduling Example
+## ⏰ Scheduling Example
 
 Example cron flow:
 
@@ -263,7 +270,7 @@ Example cron flow:
 2. Run `borg create ... /var/backups/borg-apps/latest`
 3. Run prune/compact policies
 
-## Reliability and Operations Notes
+## 🛡️ Reliability and Operations Notes
 
 - `borg-ui` has a 120s `stop_grace_period` so in-flight `borg create`/`compact`/`prune` operations get a chance to finish cleanly on stop/restart instead of being killed mid-operation.
 - `borg-ui` and `redis` both set `mem_limit`/`pids_limit` (and `borg-ui` also sets `cpus`) to protect the host from runaway compaction/extraction jobs.
@@ -271,14 +278,17 @@ Example cron flow:
 - `borg-ui` has a lightweight healthcheck (TCP connect to its own port via Python) so `restart: unless-stopped` and external monitoring can detect a wedged UI.
 - `wud` labels on `borg-ui` opt it into image-update tracking (tag + digest) without auto-updating it.
 
-## Security Notes
+## 🔐 Security Notes
+
+> [!WARNING]
+> This container runs with elevated privileges and mounts every Borg repository read-write — restrict host access accordingly.
 
 - This container uses elevated settings (`/dev/fuse`, `SYS_ADMIN`, AppArmor unconfined). Restrict host access accordingly. `SYS_ADMIN` is required for FUSE-based repo mounting/browsing; the container's entrypoint also needs full default capabilities at startup (running as root) to `chown`/prepare `/home/borg` before dropping to the `PUID`/`PGID` user, so capabilities are not further restricted with `cap_drop`.
-- Borg repositories contain sensitive data. Protect `/mnt/backups/borgrepo` and `/mnt/borg_smiddleware` with strict filesystem permissions.
+- Borg repositories contain sensitive data. Protect `/mnt/backups/borgrepo`, `/mnt/borg_smiddleware`, and `/mnt/borg_optiplex-two` with strict filesystem permissions.
 - The config export path (`/srv/borg-ui-config-export`) contains Borg UI's database, secret key, and SSH keys — treat it with the same care as the repos themselves.
 - Keep backup logs and snapshot output directories readable only by trusted users.
 
-## Troubleshooting
+## 🩺 Troubleshooting
 
 - UI not reachable:
   - Confirm port mapping with `docker compose -f docker_compose.yml ps`.
