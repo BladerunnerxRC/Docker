@@ -94,6 +94,10 @@ fi
 [ -n "$NAME" ] || NAME="$(hostname -s 2>/dev/null || echo server)"
 [ -n "$ADDRESS" ] || ADDRESS="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 [ -n "$ADDRESS" ] || ADDRESS="<server-ip>"
+# Sudo-capable user for the deploy commands in the setup sheet - direct root SSH
+# login is usually disabled, so deployment goes through this user + sudo.
+DEPLOY_USER="${SUDO_USER:-}"
+{ [ -n "$DEPLOY_USER" ] && [ "$DEPLOY_USER" != "root" ]; } || DEPLOY_USER="<admin-user>"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 [ -n "$OUT_DIR" ] || OUT_DIR="./borg-survey-${NAME}-${STAMP}"
 RAW="${OUT_DIR}/raw"
@@ -1027,25 +1031,35 @@ generate_borgui_setup() {
 
     echo "## 1. Prerequisites (before touching the GUI)"
     echo
-    echo "1. Deploy the prep script on ${NAME}:"
+    echo "1. Deploy the prep script on ${NAME}. Direct root SSH login is usually disabled, so copy"
+    echo "   it up as a sudo-capable user and install it with sudo:"
     echo
     echo '   ```bash'
-    echo "   scp borg-prep-appdata-${NAME}.sh root@${ADDRESS}:/usr/local/sbin/borg-prep-appdata-${NAME}.sh"
-    echo "   ssh root@${ADDRESS} 'chown root:root /usr/local/sbin/borg-prep-appdata-${NAME}.sh && chmod 700 /usr/local/sbin/borg-prep-appdata-${NAME}.sh'"
+    echo "   scp borg-prep-appdata-${NAME}.sh ${DEPLOY_USER}@${ADDRESS}:/tmp/borg-prep-appdata-${NAME}.sh"
+    echo "   ssh -t ${DEPLOY_USER}@${ADDRESS} 'sudo install -o root -g root -m 700 /tmp/borg-prep-appdata-${NAME}.sh /usr/local/sbin/borg-prep-appdata-${NAME}.sh && rm /tmp/borg-prep-appdata-${NAME}.sh'"
     echo '   ```'
     echo
-    echo "2. Give the Borg UI container SSH access to \`root@${ADDRESS}\` (Borg UI -> Settings -> SSH keys,"
-    echo "   or reuse the existing key), then verify non-interactive login from inside the container:"
+    echo "2. Give the Borg UI container SSH access to \`root@${ADDRESS}\`. The wrapper script logs in as"
+    echo "   root with a KEY, which works even when root password login is disabled - but if sshd refuses"
+    echo "   root entirely, set \`PermitRootLogin prohibit-password\` in \`/etc/ssh/sshd_config\` on ${NAME}"
+    echo "   and restart \`ssh\`. Install the container's public key (Borg UI -> Settings -> SSH keys)"
+    echo "   into root's authorized_keys via the sudo user:"
+    echo
+    echo '   ```bash'
+    echo "   ssh -t ${DEPLOY_USER}@${ADDRESS} 'sudo install -d -m 700 -o root -g root /root/.ssh && echo \"<paste public key from Borg UI>\" | sudo tee -a /root/.ssh/authorized_keys >/dev/null'"
+    echo '   ```'
+    echo
+    echo "   Then verify non-interactive login from inside the container:"
     echo
     echo '   ```bash'
     echo "   docker exec -it borg-backup ssh -o BatchMode=yes root@${ADDRESS} true && echo OK"
     echo '   ```'
     echo
-    echo "3. Test the prep script once by hand:"
+    echo "3. Test the prep script once by hand (from inside the container, using the key installed above):"
     echo
     echo '   ```bash'
-    echo "   ssh root@${ADDRESS} /usr/local/sbin/borg-prep-appdata-${NAME}.sh"
-    echo "   ssh root@${ADDRESS} ls -la /var/backups/borg-apps/latest"
+    echo "   docker exec -it borg-backup ssh root@${ADDRESS} /usr/local/sbin/borg-prep-appdata-${NAME}.sh"
+    echo "   docker exec -it borg-backup ssh root@${ADDRESS} ls -la /var/backups/borg-apps/latest"
     echo '   ```'
     echo
 
@@ -1197,7 +1211,7 @@ generate_borgui_setup() {
 
     echo "## 7. First-run verification"
     echo
-    echo "- [ ] Prep script runs clean: \`ssh root@${ADDRESS} /usr/local/sbin/borg-prep-appdata-${NAME}.sh\`"
+    echo "- [ ] Prep script runs clean: \`docker exec -it borg-backup ssh root@${ADDRESS} /usr/local/sbin/borg-prep-appdata-${NAME}.sh\`"
     echo "- [ ] First backup completes in Borg UI without warnings"
     echo "- [ ] Archive list shows the new archive and its size looks plausible"
     echo "- [ ] Repo key exported and stored off-repo (section 2)"

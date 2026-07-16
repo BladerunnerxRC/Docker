@@ -9,25 +9,35 @@ Work through the sections top to bottom; each maps to a screen in the Borg UI GU
 
 ## 1. Prerequisites (before touching the GUI)
 
-1. Deploy the prep script on optiplex-two:
+1. Deploy the prep script on optiplex-two. Direct root SSH login is usually disabled, so copy
+   it up as a sudo-capable user and install it with sudo (replace `<admin-user>` with your login):
 
    ```bash
-   scp borg-prep-appdata-optiplex-two.sh root@192.168.200.14:/usr/local/sbin/borg-prep-appdata-optiplex-two.sh
-   ssh root@192.168.200.14 'chown root:root /usr/local/sbin/borg-prep-appdata-optiplex-two.sh && chmod 700 /usr/local/sbin/borg-prep-appdata-optiplex-two.sh'
+   scp borg-prep-appdata-optiplex-two.sh <admin-user>@192.168.200.14:/tmp/borg-prep-appdata-optiplex-two.sh
+   ssh -t <admin-user>@192.168.200.14 'sudo install -o root -g root -m 700 /tmp/borg-prep-appdata-optiplex-two.sh /usr/local/sbin/borg-prep-appdata-optiplex-two.sh && rm /tmp/borg-prep-appdata-optiplex-two.sh'
    ```
 
-2. Give the Borg UI container SSH access to `root@192.168.200.14` (Borg UI -> Settings -> SSH keys,
-   or reuse the existing key), then verify non-interactive login from inside the container:
+2. Give the Borg UI container SSH access to `root@192.168.200.14`. The wrapper script logs in as
+   root with a KEY, which works even when root password login is disabled - but if sshd refuses
+   root entirely, set `PermitRootLogin prohibit-password` in `/etc/ssh/sshd_config` on optiplex-two
+   and restart `ssh`. Install the container's public key (Borg UI -> Settings -> SSH keys)
+   into root's authorized_keys via the sudo user:
+
+   ```bash
+   ssh -t <admin-user>@192.168.200.14 'sudo install -d -m 700 -o root -g root /root/.ssh && echo "<paste public key from Borg UI>" | sudo tee -a /root/.ssh/authorized_keys >/dev/null'
+   ```
+
+   Then verify non-interactive login from inside the container:
 
    ```bash
    docker exec -it borg-backup ssh -o BatchMode=yes root@192.168.200.14 true && echo OK
    ```
 
-3. Test the prep script once by hand:
+3. Test the prep script once by hand (from inside the container, using the key installed above):
 
    ```bash
-   ssh root@192.168.200.14 /usr/local/sbin/borg-prep-appdata-optiplex-two.sh
-   ssh root@192.168.200.14 ls -la /var/backups/borg-apps/latest
+   docker exec -it borg-backup ssh root@192.168.200.14 /usr/local/sbin/borg-prep-appdata-optiplex-two.sh
+   docker exec -it borg-backup ssh root@192.168.200.14 ls -la /var/backups/borg-apps/latest
    ```
 
 ## 2. Repository (Borg UI -> Repositories -> Add)
@@ -143,7 +153,7 @@ from `/var/backups/borg-apps/latest/databases/`:
 
 ## 7. First-run verification
 
-- [ ] Prep script runs clean: `ssh root@192.168.200.14 /usr/local/sbin/borg-prep-appdata-optiplex-two.sh`
+- [ ] Prep script runs clean: `docker exec -it borg-backup ssh root@192.168.200.14 /usr/local/sbin/borg-prep-appdata-optiplex-two.sh`
 - [ ] First backup completes in Borg UI without warnings
 - [ ] Archive list shows the new archive and its size looks plausible
 - [ ] Repo key exported and stored off-repo (section 2)
