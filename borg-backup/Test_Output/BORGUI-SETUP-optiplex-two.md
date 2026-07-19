@@ -45,9 +45,14 @@ Work through the sections top to bottom; each maps to a screen in the Borg UI GU
 | GUI field | Value |
 | --- | --- |
 | Name | `optiplex-two` |
-| Location (in-container path) | `/local/optiplex-two` |
+| Location (in-container path) | `/local/optiplex-two/borg-repo-optiplex-two` |
 | Encryption | `repokey-blake2` |
 | Passphrase | generate with `openssl rand -base64 32`; store in your password manager |
+
+The repo path sits one level below the mount on purpose: Borg UI checks that the
+*parent* of the repo path is writable (it creates the repo directory itself), and
+`/local` is a root-owned directory inside the container image. Pointing the repo at
+`/local/optiplex-two` directly fails with `Parent directory is not writable: /local`.
 
 The in-container path needs a host directory behind it - add this line to the
 `borg-ui` service volumes in `docker_compose.yml` and recreate the container:
@@ -62,7 +67,7 @@ After the repo is initialized, export the key and store it OUTSIDE the repo -
 with `repokey` the key lives in the repo config, so a lost/corrupt repo also loses the key:
 
 ```bash
-docker exec -it borg-backup borg key export /local/optiplex-two /local/borgui-config-export/optiplex-two-borg-key.txt
+docker exec -it borg-backup borg key export /local/optiplex-two/borg-repo-optiplex-two /local/borgui-config-export/optiplex-two-borg-key.txt
 ```
 
 ## 3. Script entity (Borg UI -> Scripts -> Add)
