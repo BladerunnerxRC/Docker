@@ -1068,9 +1068,14 @@ generate_borgui_setup() {
     echo "| GUI field | Value |"
     echo "| --- | --- |"
     echo "| Name | \`${NAME}\` |"
-    echo "| Location (in-container path) | \`/local/${NAME}\` |"
+    echo "| Location (in-container path) | \`/local/${NAME}/borg-repo-${NAME}\` |"
     echo "| Encryption | \`repokey-blake2\` |"
     echo "| Passphrase | generate with \`openssl rand -base64 32\`; store in your password manager |"
+    echo
+    echo "The repo path sits one level below the mount on purpose: Borg UI checks that the"
+    echo "*parent* of the repo path is writable (it creates the repo directory itself), and"
+    echo "\`/local\` is a root-owned directory inside the container image. Pointing the repo at"
+    echo "\`/local/${NAME}\` directly fails with \`Parent directory is not writable: /local\`."
     echo
     echo "The in-container path needs a host directory behind it - add this line to the"
     echo "\`borg-ui\` service volumes in \`docker_compose.yml\` and recreate the container:"
@@ -1085,7 +1090,7 @@ generate_borgui_setup() {
     echo "with \`repokey\` the key lives in the repo config, so a lost/corrupt repo also loses the key:"
     echo
     echo '```bash'
-    echo "docker exec -it borg-backup borg key export /local/${NAME} /local/borgui-config-export/${NAME}-borg-key.txt"
+    echo "docker exec -it borg-backup borg key export /local/${NAME}/borg-repo-${NAME} /local/borgui-config-export/${NAME}-borg-key.txt"
     echo '```'
     echo
 

@@ -127,7 +127,7 @@ The generated scripts are starting points reflecting what was detected at survey
 A fill-in sheet built from the survey data; each section maps to a screen in the Borg UI GUI:
 
 1. **Prerequisites** — exact `scp`/`chmod` commands to deploy the prep script and the SSH-key check from inside the `borg-backup` container
-2. **Repository** — name, in-container path (`/local/<name>`), `repokey-blake2` encryption, passphrase generation, the volume line to add to `docker_compose.yml`, and the `borg key export` command
+2. **Repository** — name, in-container path (`/local/<name>/borg-repo-<name>` — one level below the mount, see [Troubleshooting](#-troubleshooting)), `repokey-blake2` encryption, passphrase generation, the volume line to add to `docker_compose.yml`, and the `borg key export` command
 3. **Script entity** — name, description, run-on, and timeout matching the generated `BORG_UI-<name>-prep-appdata.sh` wrapper
 4. **Backup plan** — archive name template, compression, schedule, source paths with sizes at survey time, and exclude patterns in borg `--exclude` syntax with reasons
 5. **Retention/prune** — suggested keep-daily/weekly/monthly/yearly values plus compact
@@ -195,6 +195,9 @@ The compose file currently uses these host paths:
 | `/srv/borg-restore` | `/restore` | `rw` | Restore staging area |
 | `/var/log/borg` | `/logs` | `ro` | Borg job logs |
 | `/srv/borg-ui-config-export` | `/local/borgui-config-export` | `rw` | Borg UI config export snapshots (see `BORG_UI-borgui-config-export-snapshot.sh`) |
+
+> [!IMPORTANT]
+> When creating a repository in the Borg UI, set the repo path one level **below** the mount point — e.g. `/local/optiplex-two/borg-repo-optiplex-two`, not `/local/optiplex-two`. Borg UI insists on creating the repo directory itself and checks that the *parent* path is writable; `/local` is a root-owned directory inside the container image, so paths directly under it fail with `Parent directory is not writable: /local`.
 
 Named volumes:
 
@@ -298,6 +301,10 @@ Example cron flow:
   - It depends on `redis` being healthy first — check `docker compose -f docker_compose.yml logs redis`.
 - `mkdir: cannot create directory '/home/borg': Permission denied` on startup:
   - The entrypoint needs its full default capability set (running as root) to prepare `/home/borg` before dropping to the configured `PUID`/`PGID`. Don't add `cap_drop: ALL` to this service.
+- `Parent directory is not writable: /local` when creating a repository:
+  - Borg UI creates the repo directory itself, so it checks that the repo path's *parent* is writable. `/local` is a root-owned directory baked into the container image, so a repo path directly under it (e.g. `/local/optiplex-two`) always fails this check — even when that path is a writable mount.
+  - Fix: set the repo path one level below the mount, e.g. `/local/optiplex-two/borg-repo-optiplex-two`. The parent is then the writable host mount, and the repo lands on the host at `/mnt/borg_optiplex-two/borg-repo-optiplex-two`.
+  - Also confirm the container was recreated after adding the volume line (`docker compose -f docker_compose.yml up -d`) and the host directory is writable by the container user (`PUID`/`PGID` = `1024`/`100`).
 - Backup source or repo path errors:
   - Validate host directories exist and are mounted as expected.
 - Snapshot script failures:
