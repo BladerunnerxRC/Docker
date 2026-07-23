@@ -13,6 +13,7 @@ Docker templates and misc self-hosted stack configs.
 | [Manyfold3D](Manyfold3D/) | Self-hosted library/organizer for 3D-printable models, backed by PostgreSQL and Redis. |
 | [nocodb](nocodb/) | NocoDB — no-code database / Airtable-style UI over a PostgreSQL backend. |
 | [portracker](portracker/) | Network port tracker that discovers and maps exposed container/host ports. |
+| [SearXNG](SearXNG/) | Privacy-respecting metasearch engine with a Valkey backend for rate limiting, packaged as a Portainer stack. |
 
 ## Networking & reverse proxy
 

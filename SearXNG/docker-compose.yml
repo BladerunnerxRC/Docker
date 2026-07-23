@@ -1,0 +1,101 @@
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+
+    ports:
+      - "8888:8080"
+
+    volumes:
+      - searxng_config:/etc/searxng:rw
+      - searxng_cache:/var/cache/searxng:rw
+
+    environment:
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8888/}
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in the stack environment}
+      SEARXNG_REDIS_URL: redis://valkey:6379/0
+
+    depends_on:
+      valkey:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+
+    mem_limit: 1g
+    mem_reservation: 256m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - searxng_net
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: searxng-valkey
+    restart: unless-stopped
+
+    command: valkey-server --save 30 1 --loglevel warning
+
+    volumes:
+      - searxng_valkey_data:/data
+
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+
+    mem_limit: 256m
+    mem_reservation: 64m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - searxng_net
+
+volumes:
+  searxng_config:
+    name: searxng_config
+  searxng_cache:
+    name: searxng_cache
+  searxng_valkey_data:
+    name: searxng_valkey_data
+
+networks:
+  searxng_net:
+    driver: bridge
