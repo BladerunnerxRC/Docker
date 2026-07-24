@@ -35,6 +35,17 @@ All state lives in named volumes — no host paths to pre-create:
 | `searxng_cache` | `/var/cache/searxng` | SearXNG's on-disk cache. |
 | `searxng_valkey_data` | `/data` (valkey) | Valkey persistence (`--save 30 1` snapshots). |
 
+SearXNG runs as the non-root `searxng` user (uid 977) and never starts as root, so it
+cannot fix volume ownership itself. If the container exits with
+`cp: can't create '/etc/searxng/settings.yml': Permission denied`, chown the volumes once
+on the Docker host and restart:
+
+```sh
+docker run --rm -v searxng_config:/etc/searxng -v searxng_cache:/var/cache/searxng \
+  alpine chown -R 977:977 /etc/searxng /var/cache/searxng
+docker restart searxng
+```
+
 ## Customization
 
 A default `settings.yml` is generated in the `searxng_config` volume on first start.
@@ -53,7 +64,8 @@ so the built-in limiter works out of the box.
 Matching the other stacks in this repo, both containers run with:
 
 - `cap_drop: ALL` plus only the capabilities each service needs
-  (`CHOWN`/`SETGID`/`SETUID` for SearXNG, `SETGID`/`SETUID`/`DAC_OVERRIDE` for Valkey)
+  (none for SearXNG — the current image runs as the non-root `searxng` user (uid 977)
+  from the start; `SETGID`/`SETUID`/`DAC_OVERRIDE` for Valkey)
 - `no-new-privileges`
 - memory limits (1 GB SearXNG, 256 MB Valkey) and reservations
 - healthchecks (`/healthz` for SearXNG, `valkey-cli ping` for Valkey)

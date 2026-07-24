@@ -32,10 +32,6 @@ services:
 
     cap_drop:
       - ALL
-    cap_add:
-      - CHOWN
-      - SETGID
-      - SETUID
 
     mem_limit: 1g
     mem_reservation: 256m
