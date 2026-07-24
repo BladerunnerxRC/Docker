@@ -12,7 +12,7 @@ services:
       - searxng_cache:/var/cache/searxng:rw
 
     environment:
-      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8888/}
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://192.168.200.14:8888/}
       SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in the stack environment}
       SEARXNG_REDIS_URL: redis://valkey:6379/0
 
