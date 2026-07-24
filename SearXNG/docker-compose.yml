@@ -32,6 +32,11 @@ services:
 
     cap_drop:
       - ALL
+    cap_add:
+      # The entrypoint runs as root: it chowns the volumes to searxng (CHOWN),
+      # then writes settings.yml into the searxng-owned dir (DAC_OVERRIDE).
+      - CHOWN
+      - DAC_OVERRIDE
 
     mem_limit: 1g
     mem_reservation: 256m
