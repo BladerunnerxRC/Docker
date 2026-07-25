@@ -1,0 +1,51 @@
+# SearXNG limiter / bot-detection tuning for this stack.
+# Only read when the limiter is enabled (SEARXNG_LIMITER=true in
+# docker-compose.yml). Reference: https://docs.searxng.org/admin/searx.limiter.html
+
+[botdetection]
+
+# Leading bits compared to decide whether two request IPs belong to the same
+# client network (one rate-limit bucket per network). 32/48 means every IPv4
+# host / IPv6 /48 gets its own bucket.
+ipv4_prefix = 32
+ipv6_prefix = 48
+
+# Proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the real
+# client IP. Loopback only for now — the stack publishes port 8888 directly,
+# so requests arrive with their genuine source address. If the instance moves
+# behind the traefik stack (see README "Reverse proxy"), uncomment the Docker
+# network range so the limiter buckets real clients instead of lumping
+# everyone under the proxy's IP.
+trusted_proxies = [
+  '127.0.0.0/8',
+  '::1',
+  # '172.16.0.0/12',  # Docker bridge/overlay networks (traefik)
+]
+
+[botdetection.ip_limit]
+
+# Keep link-local addresses monitored like everything else (default).
+filter_link_local = false
+
+# Require clients to fetch a CSS-delivered token before /search is accepted —
+# defeats simple scripted scrapers that never load page assets. Trusted LAN
+# clients bypass this via pass_ip below, so JSON-API consumers on the LAN
+# (e.g. LLM/search integrations) are unaffected.
+link_token = true
+
+[botdetection.ip_lists]
+
+# pass_ip has priority over every other bot-detection method: listed networks
+# get unrestricted access, including the JSON API. The home LAN is trusted;
+# tighten to specific hosts or remove if the instance is ever exposed wider.
+pass_ip = [
+  '192.168.200.0/24',
+]
+
+block_ip = [
+  # '203.0.113.0/24',  # example: persistent scraper network
+]
+
+# Don't let the SearXNG org's checker IPs (check.searx.space) bypass the
+# limiter — this is a private instance, not a listed public one.
+pass_searxng_org = false

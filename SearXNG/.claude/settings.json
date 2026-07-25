@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude_ai_Context7__query-docs",
+      "PowerShell($env:SEARXNG_SECRET = 'dummy'; docker compose -f docker-compose.yml config --quiet && echo \"compose OK\")"
+    ]
+  }
+}

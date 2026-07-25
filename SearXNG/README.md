@@ -54,6 +54,33 @@ docker restart searxng
 The Valkey connection is already wired up via `SEARXNG_VALKEY_URL=valkey://valkey:6379/0`,
 so the built-in limiter works out of the box.
 
+## Limiter / bot protection
+
+The limiter is force-enabled via `SEARXNG_LIMITER=true` in the compose file (environment
+variables override `settings.yml`), and its tuning lives in [limiter.toml](limiter.toml),
+bind-mounted to `/etc/searxng/limiter.toml`. What it's tuned for:
+
+- **Trusted LAN** — `pass_ip = ['192.168.200.0/24']` gives LAN clients unrestricted
+  access, including the JSON API (relevant for LLM/search integrations that would
+  otherwise be classified as bots).
+- **Strict for everyone else** — `link_token = true` requires clients to fetch a
+  CSS-delivered token before `/search` is accepted, which blocks simple scripted
+  scrapers. Token bookkeeping uses Valkey, which this stack already provides.
+- **No public-instance passlist** — `pass_searxng_org = false`; the `check.searx.space`
+  checker IPs have no business on a private instance.
+- **No trusted proxies yet** — port 8888 is published directly, so only loopback is in
+  `trusted_proxies`. See [Reverse proxy](#reverse-proxy) before putting traefik in front.
+
+The file bind mount assumes the stack is deployed **from the git repository** (compose
+path `SearXNG/docker-compose.yml`), so `./limiter.toml` exists next to the compose file.
+If you paste the compose into Portainer's web editor instead, drop the
+`./limiter.toml:...` volume line and copy the file into the config volume manually:
+
+```sh
+docker cp limiter.toml searxng:/etc/searxng/limiter.toml
+docker restart searxng
+```
+
 ## Hardening
 
 Matching the other stacks in this repo, both containers run with:
@@ -74,3 +101,7 @@ To put the instance behind the [traefik](../traefik/) / edge stack:
 1. Attach the `searxng` service to the proxy network and remove the published `8888` port.
 2. Set `SEARXNG_BASE_URL` to the public URL (e.g. `https://search.example.lan/`) so
    generated links and redirects use the right origin.
+3. Uncomment the `172.16.0.0/12` entry in `trusted_proxies` in
+   [limiter.toml](limiter.toml). Behind a proxy every request arrives from the proxy's
+   container IP — without this, the limiter can't see real client IPs and lumps all
+   traffic into one rate-limit bucket (and `pass_ip` matching breaks too).

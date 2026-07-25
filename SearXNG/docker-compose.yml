@@ -9,12 +9,19 @@ services:
 
     volumes:
       - searxng_config:/etc/searxng:rw
+      # rw (not ro): the entrypoint chowns everything under /etc/searxng and
+      # would fail on a read-only mount. Requires deploying the stack from the
+      # git repository so ./limiter.toml exists next to this file.
+      - ./limiter.toml:/etc/searxng/limiter.toml:rw
       - searxng_cache:/var/cache/searxng:rw
 
     environment:
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://192.168.200.14:8888/}
       SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in the stack environment}
       SEARXNG_VALKEY_URL: valkey://valkey:6379/0
+      # Enables the limiter regardless of what settings.yml says; tuning lives
+      # in limiter.toml.
+      SEARXNG_LIMITER: "true"
 
     depends_on:
       valkey:
