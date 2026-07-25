@@ -51,7 +51,7 @@ docker exec -it searxng sh -c 'vi /etc/searxng/settings.yml'
 docker restart searxng
 ```
 
-The Valkey connection is already wired up via `SEARXNG_REDIS_URL=redis://valkey:6379/0`,
+The Valkey connection is already wired up via `SEARXNG_VALKEY_URL=valkey://valkey:6379/0`,
 so the built-in limiter works out of the box.
 
 ## Hardening
