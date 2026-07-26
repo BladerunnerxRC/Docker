@@ -1,5 +1,10 @@
 # SearXNG
 
+![Docker Compose](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)
+![Portainer](https://img.shields.io/badge/managed%20by-portainer-13BEF9?logo=portainer&logoColor=white)
+![SearXNG](https://img.shields.io/badge/app-searxng-3050ff)
+![Valkey](https://img.shields.io/badge/cache-valkey-1E88E5)
+
 Privacy-respecting metasearch engine, deployed as a two-service Portainer stack:
 [docker-compose.yml](docker-compose.yml).
 
@@ -23,7 +28,13 @@ SearXNG waits for Valkey's healthcheck to pass before starting
    | `SEARXNG_SECRET` | yes | output of `openssl rand -hex 32` | Secret key for the instance. The deploy intentionally fails with a clear error if unset. |
    | `SEARXNG_BASE_URL` | no | `https://search.example.lan/` | Public URL if served behind a reverse proxy. Defaults to `http://localhost:8888/`. |
 
-4. **Deploy the stack**, then browse to `http://<host>:8888/`.
+4. **Deploy the stack**, then copy the limiter config in (see
+   [Limiter / bot protection](#limiter--bot-protection)) and browse to `http://<host>:8888/`.
+
+> [!IMPORTANT]
+> `SEARXNG_SECRET` is required — the stack won't deploy without it. Don't skip step 4's
+> limiter config copy either; the container starts fine without it, but bot protection
+> stays on defaults until you do.
 
 ## Storage
 
@@ -36,10 +47,13 @@ All state lives in named volumes — no host paths to pre-create:
 | `searxng_valkey_data` | `/data` (valkey) | Valkey persistence (`--save 30 1` snapshots). |
 
 The SearXNG entrypoint runs as root and fixes volume ownership itself on every start
-(`chown -R searxng:searxng`), so no host-side permission setup is needed. If the container
-exits with `cp: can't create '/etc/searxng/settings.yml': Permission denied`, the stack is
-missing the `CHOWN`/`DAC_OVERRIDE` capabilities under `cap_add` — root without
-`DAC_OVERRIDE` cannot write into the searxng-owned config directory.
+(`chown -R searxng:searxng`), so no host-side permission setup is needed.
+
+> [!TIP]
+> If the container exits with
+> `cp: can't create '/etc/searxng/settings.yml': Permission denied`, the stack is missing
+> the `CHOWN`/`DAC_OVERRIDE` capabilities under `cap_add` — root without `DAC_OVERRIDE`
+> cannot write into the searxng-owned config directory.
 
 ## Customization
 
@@ -57,8 +71,8 @@ so the built-in limiter works out of the box.
 ## Limiter / bot protection
 
 The limiter is force-enabled via `SEARXNG_LIMITER=true` in the compose file (environment
-variables override `settings.yml`), and its tuning lives in [limiter.toml](limiter.toml),
-bind-mounted to `/etc/searxng/limiter.toml`. What it's tuned for:
+variables override `settings.yml`), and its tuning lives in [limiter.toml](limiter.toml).
+What it's tuned for:
 
 - **Trusted LAN** — `pass_ip = ['192.168.200.0/24']` gives LAN clients unrestricted
   access, including the JSON API (relevant for LLM/search integrations that would
@@ -71,15 +85,25 @@ bind-mounted to `/etc/searxng/limiter.toml`. What it's tuned for:
 - **No trusted proxies yet** — port 8888 is published directly, so only loopback is in
   `trusted_proxies`. See [Reverse proxy](#reverse-proxy) before putting traefik in front.
 
-The file bind mount assumes the stack is deployed **from the git repository** (compose
-path `SearXNG/docker-compose.yml`), so `./limiter.toml` exists next to the compose file.
-If you paste the compose into Portainer's web editor instead, drop the
-`./limiter.toml:...` volume line and copy the file into the config volume manually:
+`limiter.toml` is **not** bind-mounted — `searxng_config` is a named volume, and Docker
+bind mounts need a real path on the Docker host, which a Portainer-managed git checkout
+doesn't reliably provide (Portainer runs as a container itself; relative paths from a git
+stack only resolve to real host paths if the stack's environment has "relative path
+volumes" set up, which requires bind-mounting a host directory into the Portainer
+container — not worth it for one file).
 
-```sh
-docker cp limiter.toml searxng:/etc/searxng/limiter.toml
-docker restart searxng
-```
+> [!IMPORTANT]
+> Copy the file into the volume after every deploy and after every edit to
+> `limiter.toml`:
+>
+> ```sh
+> docker cp limiter.toml searxng:/etc/searxng/limiter.toml
+> docker restart searxng
+> ```
+>
+> Skipping this doesn't break the container — `SEARXNG_LIMITER=true` still turns the
+> limiter on with defaults — but you won't get the tuning above (LAN passlist, link
+> token, etc.) until the file is copied in.
 
 ## Hardening
 
@@ -101,7 +125,9 @@ To put the instance behind the [traefik](../traefik/) / edge stack:
 1. Attach the `searxng` service to the proxy network and remove the published `8888` port.
 2. Set `SEARXNG_BASE_URL` to the public URL (e.g. `https://search.example.lan/`) so
    generated links and redirects use the right origin.
-3. Uncomment the `172.16.0.0/12` entry in `trusted_proxies` in
-   [limiter.toml](limiter.toml). Behind a proxy every request arrives from the proxy's
-   container IP — without this, the limiter can't see real client IPs and lumps all
-   traffic into one rate-limit bucket (and `pass_ip` matching breaks too).
+3. Uncomment the `172.16.0.0/12` entry in `trusted_proxies` in [limiter.toml](limiter.toml).
+
+> [!WARNING]
+> Don't skip step 3. Behind a proxy, every request arrives from the proxy's container
+> IP — without a trusted proxy entry, the limiter can't see real client IPs and lumps all
+> traffic into one rate-limit bucket (and `pass_ip` matching breaks too).

@@ -10,9 +10,7 @@ services:
     volumes:
       - searxng_config:/etc/searxng:rw
       # rw (not ro): the entrypoint chowns everything under /etc/searxng and
-      # would fail on a read-only mount. Requires deploying the stack from the
-      # git repository so ./limiter.toml exists next to this file.
-      - ./limiter.toml:/etc/searxng/limiter.toml:rw
+      # would fail on a read-only mount.
       - searxng_cache:/var/cache/searxng:rw
 
     environment:
