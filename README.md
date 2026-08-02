@@ -14,13 +14,13 @@ Docker templates and misc self-hosted stack configs.
 | [nocodb](nocodb/) | NocoDB — no-code database / Airtable-style UI over a PostgreSQL backend. |
 | [portracker](portracker/) | Network port tracker that discovers and maps exposed container/host ports. |
 | [SearXNG](SearXNG/) | Privacy-respecting metasearch engine with a Valkey backend for rate limiting, packaged as a Portainer stack. |
+| [Stirling-PDF](Stirling-PDF/) | Local PDF toolkit — merge, split, convert, compress, OCR, redact, and sign, with JVM heap and CPU capped so conversion jobs can't peg the host. |
 
 ## Networking & reverse proxy
 
 | App | Description |
 | --- | --- |
-| [traefik](traefik/) | Traefik reverse-proxy stack with split dynamic config (transports, middlewares, routers, services), plus AdGuard Home DNS and a whoami test service. |
-| [stacks/edge-stack](stacks/edge-stack/) | Edge reverse-proxy stack: Traefik (TLS, dashboard auth/IP allowlist), AdGuard Home DNS, and a whoami test service on a shared `edge` network. |
+| [traefik](traefik/) | Edge reverse-proxy stack — Traefik with split dynamic config (transports, middlewares, routers, services), TLS via the `stepca` resolver, plus AdGuard Home DNS and a whoami test service on a shared `edge` network. |
 | [AdGuard](AdGuard/) | AdGuard Home network-wide DNS ad/tracker blocker, deployed on a dedicated macvlan interface for DHCP support. |
 | [step-ca](step-ca/) | Smallstep `step-ca` internal certificate authority for issuing LAN TLS certs — [Docker server install](step-ca/Docker_Server_Install/) and [NAS install](step-ca/NAS_Install/) variants. |
 

@@ -13,12 +13,18 @@ The goal of this doc is to describe the **dynamic config files** and the **D&R w
 
 Traefik **file provider** dynamic config is stored here:
 
-stacks/edge-stack/traefik/dynamic/
-00-servers-transports.yml
-10-middlewares.yml
-20-routers.yml
-30-services.yml
-.gitignore
+```text
+traefik/dynamic/
+  00-servers-transports.yml
+  10-middlewares.yml
+  20-routers.yml
+  30-services.yml
+  .gitignore
+```
+
+> **Note:** this path used to be `stacks/edge-stack/traefik/dynamic/`. The repo was
+> flattened in `e23e361` (2026-07-01) and every stack moved up to the repo root.
+> See [Known issue: sync script path](#known-issue-sync-script-path).
 
 
 ### What each file does
@@ -68,22 +74,54 @@ can reintroduce “ghost” routers/services.
 
 ## D&R Scripts (Deploy & Recover)
 
+### Known issue: sync script path
+
+`edge-sync-traefik-dynamic` was never updated for the repo flatten and still reads the
+old layout:
+
+```bash
+# scripts/sbin/edge-sync-traefik-dynamic:24
+SRC="${REPO}/stacks/edge-stack/traefik/dynamic"   # path no longer exists
+```
+
+Because step 1/9 hard-resets the server clone to `origin/main`, that directory is gone
+after the fetch and the script aborts at step 2/9:
+
+```text
+missing source dir: /opt/git/Docker/stacks/edge-stack/traefik/dynamic
+```
+
+It **fails safe** — the abort happens before the backup, rsync, and Traefik restart, so
+the live config is never touched. But deploys have been a no-op since the flatten. The fix
+is a one-line change to line 24:
+
+```bash
+SRC="${REPO}/traefik/dynamic"
+```
+
+`edge-rollback-traefik-dynamic` is unaffected; it only reads from
+`/opt/netlab-stack/traefik/backups` and never touches the repo.
+
+### Installed scripts
+
 These are installed on smiddleware:
 
+```text
 /usr/local/sbin/
-edge-stack-bootstrap-dirs.sh
-edge-sync-traefik-dynamic
-edge-rollback-traefik-dynamic
-
+  edge-stack-bootstrap-dirs.sh
+  edge-sync-traefik-dynamic
+  edge-rollback-traefik-dynamic
+```
 
 Logs are stored here:
 
+```text
 /var/log/edge-sync/
-edge-sync-traefik-dynamic.log
-edge-sync-traefik-dynamic-YYYYmmdd-HHMMSS.log
-edge-rollback-traefik-dynamic.log
-edge-rollback-traefik-dynamic-YYYYmmdd-HHMMSS.log
-
+  edge-sync-traefik-dynamic.log
+  edge-sync-traefik-dynamic-YYYYmmdd-HHMMSS.log
+  edge-rollback-traefik-dynamic.log
+  edge-rollback-traefik-dynamic-YYYYmmdd-HHMMSS.log
+```
 
 ### 1) Bootstrap directories (one-time)
 Creates required directories with owners/permissions:

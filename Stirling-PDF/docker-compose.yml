@@ -1,0 +1,46 @@
+services:
+  stirling-pdf:
+    image: stirlingtools/stirling-pdf:latest
+    container_name: stirling-pdf
+    restart: unless-stopped
+    ports:
+      - "8080:8080"                      # host:container — change left side if 8080 is taken
+    environment:
+      DISABLE_ADDITIONAL_FEATURES: "false"   # false = full toolkit (OCR, LibreOffice convert, etc.)
+      SECURITY_ENABLELOGIN: "false"          # no auth — fine behind Tailscale; see note below
+      SYSTEM_ENABLEANALYTICS: "false"        # kills telemetry + the cookie consent banner
+      SYSTEM_DEFAULTLOCALE: "en-US"
+      SYSTEM_MAXFILESIZE: "100"              # max upload in MB
+      UI_APPNAME: "Stirling-PDF"
+      UI_APPNAMENAVBAR: "Stirling-PDF"
+      LANGS: "en_US"
+      TESSERACT_LANGS: "eng"                 # OCR languages; add e.g. "eng,deu,fra"
+      JAVA_TOOL_OPTIONS: "-Xmx1536m"         # cap JVM heap, leaving headroom for native OCR/LibreOffice procs
+    volumes:
+      - stirling-data:/usr/share/tessdata    # OCR language packs
+      - stirling-config:/configs             # settings.yml, custom config
+      - stirling-logs:/logs
+      - stirling-custom:/customFiles         # custom fonts, templates, static assets
+      - stirling-pipeline:/pipeline          # saved pipeline definitions
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/api/v1/info/status | grep -q 'UP'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s                      # first boot is slow — it pulls tessdata
+    mem_limit: 2g                            # hard cap — container OOM-killed if exceeded (bump to 3g if OCR-heavy)
+    mem_reservation: 512m                    # soft floor Docker tries to keep free
+    cpus: 2.0                                # cap CPU so OCR/conversion can't peg the whole box
+    networks:
+      - stirling-net
+
+networks:
+  stirling-net:
+    driver: bridge
+
+volumes:
+  stirling-data:
+  stirling-config:
+  stirling-logs:
+  stirling-custom:
+  stirling-pipeline:
