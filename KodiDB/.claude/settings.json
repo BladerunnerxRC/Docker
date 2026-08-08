@@ -5,7 +5,12 @@
       "Bash(echo \"exit=$?\")",
       "Bash(bash -n backup.sh)",
       "Bash(python -c \"import yaml,sys; d=yaml.safe_load\\(open\\('docker-compose.yml'\\)\\); print\\('compose YAML: parses OK'\\); print\\('services:', list\\(d['services']\\)\\); print\\('backup svc:', d['services']['mariadb-kodi-backup']\\)\")",
-      "Read(//c/Users/Thoma/OneDrive/Documents/CODE/GitHub/Docker/borg-backup/**)"
+      "Read(//c/Users/Thoma/OneDrive/Documents/CODE/GitHub/Docker/borg-backup/**)",
+      "Bash(python3 -)",
+      "Bash(node -e \"console.log\\('node',process.version\\)\")",
+      "Bash(npm ls *)",
+      "Bash(npm init *)",
+      "Bash(npm install *)"
     ]
   }
 }

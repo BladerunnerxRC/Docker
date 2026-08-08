@@ -1,4 +1,16 @@
-# Kodi Shared Library — MariaDB Backend
+<h1 align="center">Kodi Shared Library — MariaDB Backend</h1>
+
+<p align="center">
+  <em>One library. Every device. Watched state that actually stays in sync.</em>
+</p>
+
+<p align="center">
+  <img alt="MariaDB 11" src="https://img.shields.io/badge/MariaDB-11-003545?style=for-the-badge&logo=mariadb&logoColor=white">
+  <img alt="Docker Compose" src="https://img.shields.io/badge/Docker_Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
+  <img alt="Portainer" src="https://img.shields.io/badge/Portainer-13BEF9?style=for-the-badge&logo=portainer&logoColor=white">
+  <img alt="Kodi" src="https://img.shields.io/badge/Kodi-17B2E7?style=for-the-badge&logo=kodi&logoColor=white">
+  <img alt="Backups by Borg" src="https://img.shields.io/badge/Backups-Borg-4C8B2B?style=for-the-badge">
+</p>
 
 A Docker Compose stack that runs **MariaDB** as a central database backend for a
 shared [Kodi](https://kodi.tv) library. Backups are handled externally by
@@ -12,19 +24,68 @@ and you only scrape/maintain metadata once.
 
 ## Contents
 
-- [Architecture](#architecture)
-- [Requirements](#requirements)
-- [Environment Variables](#environment-variables)
-- [Deploying in Portainer](#deploying-in-portainer)
-- [Database Setup](#database-setup)
-- [Kodi Configuration (`advancedsettings.xml`)](#kodi-configuration-advancedsettingsxml)
-- [Backups & Restore](#backups--restore)
-- [Maintenance & Upgrades](#maintenance--upgrades)
-- [Troubleshooting](#troubleshooting)
+| | Section | |
+|---|---|---|
+| 🏗️ | [Architecture](#architecture) | How the pieces fit together |
+| 📋 | [Requirements](#requirements) | What you need before starting |
+| ⚙️ | [Environment Variables](#environment-variables) | Stack configuration |
+| 🚀 | [Deploying in Portainer](#deploying-in-portainer) | Getting the stack up |
+| 🗄️ | [Database Setup](#database-setup) | The one-time global grant |
+| 🎬 | [Kodi Configuration](#kodi-configuration-advancedsettingsxml) | `advancedsettings.xml` |
+| 🧭 | [First Run & Client Rollout](#first-run--client-rollout) | **Start here after configuring Kodi** |
+| 💾 | [Backups & Restore](#backups--restore) | The Borg hook |
+| 🔧 | [Maintenance & Upgrades](#maintenance--upgrades) | Keeping it healthy |
+| 🩺 | [Troubleshooting](#troubleshooting) | When something breaks |
 
 ---
 
 ## Architecture
+
+```mermaid
+flowchart LR
+    subgraph clients["🎬 Kodi Clients"]
+        direction TB
+        K1["Living Room<br/>LibreELEC"]
+        K2["Bedroom<br/>Android"]
+        K3["Desktop<br/>Windows"]
+    end
+
+    NAS[("🗂️ NAS<br/>nfs:// · smb://")]
+
+    subgraph host["🐳 Docker Host"]
+        direction TB
+        DB[("mariadb-kodi<br/>mariadb:11 · :3306")]
+        VOL["kodi-db-data<br/>/var/lib/mysql"]
+        HOOK["borg-prep-kodidb.sh"]
+        STAGE["/var/backups/borg-kodidb/latest"]
+    end
+
+    REPO[("🛡️ Borg Repository")]
+
+    K1 --> DB
+    K2 --> DB
+    K3 --> DB
+    K1 -.-> NAS
+    K2 -.-> NAS
+    K3 -.-> NAS
+    DB --- VOL
+    HOOK -->|mariadb-dump| DB
+    HOOK --> STAGE
+    STAGE -->|borg create| REPO
+
+    classDef client fill:#17B2E7,stroke:#0B6E91,stroke-width:2px,color:#fff
+    classDef database fill:#003545,stroke:#C0765A,stroke-width:2px,color:#fff
+    classDef storage fill:#2496ED,stroke:#14539A,stroke-width:2px,color:#fff
+    classDef backup fill:#4C8B2B,stroke:#2E5619,stroke-width:2px,color:#fff
+
+    class K1,K2,K3 client
+    class DB database
+    class VOL,NAS storage
+    class HOOK,STAGE,REPO backup
+```
+
+Solid lines are the **shared metadata** path (MySQL on `:3306`); dotted lines are
+**media playback**, which never touches the database.
 
 | Service | Image | Purpose |
 |---|---|---|
@@ -57,14 +118,14 @@ run, which stages SQL dumps at `/var/backups/borg-kodidb/latest` for Borg to arc
 Set these in Portainer's **Stack → Environment variables** section, or copy
 [`.env.example`](.env.example) to `.env` if you deploy with `docker compose` directly.
 
-| Name | Example | Description |
-|---|---|---|
-| `MARIADB_ROOT_PASSWORD` | *strong password* | Root/admin account password. |
-| `MARIADB_USER` | `kodi` | The DB user Kodi connects as. |
-| `MARIADB_PASSWORD` | *strong password* | Must match the password in `advancedsettings.xml`. |
-| `TZ` | `America/New_York` | Timezone (affects log timestamps). |
-| `MARIADB_PORT` | `3306` | Host port exposed for Kodi clients. |
-| `INNODB_BUFFER_POOL_SIZE` | `512M` | InnoDB cache size. Raise if RAM allows. |
+| Name | | Example | Description |
+|---|---|---|---|
+| `MARIADB_ROOT_PASSWORD` | ![required](https://img.shields.io/badge/required-C9372C?style=flat-square) | *strong password* | Root/admin account password. |
+| `MARIADB_USER` | ![required](https://img.shields.io/badge/required-C9372C?style=flat-square) | `kodi` | The DB user Kodi connects as. |
+| `MARIADB_PASSWORD` | ![required](https://img.shields.io/badge/required-C9372C?style=flat-square) | *strong password* | Must match the password in `advancedsettings.xml`. |
+| `TZ` | ![optional](https://img.shields.io/badge/optional-6C757D?style=flat-square) | `America/New_York` | Timezone (affects log timestamps). |
+| `MARIADB_PORT` | ![optional](https://img.shields.io/badge/optional-6C757D?style=flat-square) | `3306` | Host port exposed for Kodi clients. |
+| `INNODB_BUFFER_POOL_SIZE` | ![optional](https://img.shields.io/badge/optional-6C757D?style=flat-square) | `512M` | InnoDB cache size. Raise if RAM allows. |
 
 The backup script reads the root password from the running container's own
 environment, so it needs no credentials of its own. It accepts optional overrides
@@ -85,9 +146,11 @@ as environment variables — `KODI_DB_CONTAINER` (default `mariadb-kodi`),
 2. Watch the `mariadb-kodi` logs for `ready for connections`, then continue to
    [Database Setup](#database-setup).
 
-3. Wire up backups — see [Backups & Restore](#backups--restore). The stack itself
-   has no backup service; nothing protects this database until the Borg hook is
-   installed.
+3. Wire up backups — see [Backups & Restore](#backups--restore).
+
+> [!IMPORTANT]
+> The stack has no backup service of its own. **Nothing protects this database
+> until the Borg hook is installed.**
 
 ---
 
@@ -100,11 +163,17 @@ creates/drops them automatically, so the `kodi` user needs **global privileges**
 The `MARIADB_USER`/`MARIADB_PASSWORD` env vars create the user, but only grant it
 rights to one default DB. After the stack's first start, run the global grant once:
 
-Pick **one** of the two places below — the commands are not interchangeable.
-The passwords live in the *container's* environment, so whichever shell you use,
-the expansion has to happen inside the container.
+> [!WARNING]
+> Pick **one** of the two options below — they are not interchangeable. The
+> passwords live in the *container's* environment, so whichever shell you use,
+> the expansion has to happen inside the container. Writing
+> `-p"$MARIADB_ROOT_PASSWORD"` unquoted from the host lets your **host** shell
+> expand it to an empty string, and the client stops at an `Enter password:`
+> prompt instead of authenticating.
 
-**A. From the Docker host** (there is a `docker` CLI here):
+### Option A — from the Docker host
+
+There is a `docker` CLI here, so wrap the client in `docker exec` and single-quote it:
 
 ```bash
 docker exec -i mariadb-kodi sh -c 'export MYSQL_PWD="$MARIADB_ROOT_PASSWORD"; exec mariadb -uroot' <<'SQL'
@@ -120,13 +189,10 @@ docker exec -it mariadb-kodi sh -c \
   'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" -e "SELECT 1;"'
 ```
 
-> **Single-quote these.** Writing `-p"$MARIADB_ROOT_PASSWORD"` unquoted lets the
-> *host* shell expand it to an empty string, and the client stops at an
-> `Enter password:` prompt instead of authenticating.
+### Option B — inside the container
 
-**B. Inside the container** — Portainer → `mariadb-kodi` → **Console** (`/bin/bash`),
-or `docker exec -it mariadb-kodi bash`. There is no `docker` CLI in here, so drop
-the wrapper; the variables are already in scope:
+Portainer → `mariadb-kodi` → **Console** (`/bin/bash`), or `docker exec -it mariadb-kodi bash`.
+There is no `docker` CLI in here, so drop the wrapper — the variables are already in scope:
 
 ```bash
 export MYSQL_PWD="$MARIADB_ROOT_PASSWORD"
@@ -187,23 +253,146 @@ Contents:
 </advancedsettings>
 ```
 
-**Important notes**
+> [!NOTE]
+>
+> - `<type>mysql</type>` is correct for **both** MySQL and MariaDB — there is no
+>   separate `mariadb` type.
+> - `<host>` is the **Docker host** IP (the machine running this stack), **not** the NAS.
+> - `<user>`/`<pass>` must match `MARIADB_USER`/`MARIADB_PASSWORD`.
 
-- `<type>mysql</type>` is correct for **both** MySQL and MariaDB — there is no
-  separate `mariadb` type.
-- `<host>` is the **Docker host** IP (the machine running this stack), **not** the NAS.
-- `<user>`/`<pass>` must match `MARIADB_USER`/`MARIADB_PASSWORD`.
-- After editing, **fully restart Kodi**. The first client to connect builds the library;
-  point the others at the same DB and add media via the **same network source paths**.
-- Artwork/thumbnail caches remain **local per client** — only metadata is shared.
+> [!IMPORTANT]
+> Writing this file is only step one. Continue to
+> [First Run & Client Rollout](#first-run--client-rollout) — the steps there
+> decide whether the shared library actually works.
+
+---
+
+## First Run & Client Rollout
+
+Follow these in order. Steps 1–5 are the **first** client only; step 6 rolls out
+to the rest.
+
+### 1. Fully restart Kodi
+
+Not "back to the main menu" — the process has to exit. `advancedsettings.xml` is
+read once, at startup.
+
+| Platform | How |
+|---|---|
+| Windows / macOS / Linux | Quit the app entirely, then relaunch |
+| Android | Settings → Apps → Kodi → **Force stop**, then reopen |
+| LibreELEC / CoreELEC | `systemctl restart kodi` |
+
+### 2. Confirm it actually connected
+
+> [!WARNING]
+> **Kodi fails silently here.** If the connection is refused it falls back to the
+> local SQLite library without any warning, so everything looks normal until you
+> notice nothing is syncing. Always verify.
+
+Check `kodi.log` for the connection:
+
+| Platform | Log path |
+|---|---|
+| Windows | `%APPDATA%\Kodi\kodi.log` |
+| Linux | `~/.kodi/temp/kodi.log` |
+| Android | `Android/data/org.xbmc.kodi/files/.kodi/temp/kodi.log` |
+| LibreELEC / CoreELEC | `/storage/.kodi/temp/kodi.log` |
+| macOS | `~/Library/Logs/kodi.log` |
+
+What to look for:
+
+```diff
++ Running database version MyVideos121          ← connected to MariaDB
+- Unable to open database ... [1045]            ← bad credentials or missing grant
+```
+
+A `[1045]` means the credentials or the global grant are wrong — go back to
+[Database Setup](#database-setup).
+
+Confirm from the server side too. The databases are created on the first
+successful connection, so if these don't exist, no client has connected:
+
+```bash
+MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" -e "SHOW DATABASES;"
+```
+
+### 3. Expect an empty library
+
+Switching to MySQL does **not** migrate your existing local library. Watched
+history, resume points, and ratings stay behind in the local SQLite DB, and Kodi
+will not read them again.
+
+> [!IMPORTANT]
+> If the existing library is worth keeping, do this **before** scanning:
+> Settings → Media → Library → **Export library** → *separate files*. That writes
+> `.nfo` files alongside your media, which the scan into MySQL then picks up.
+> Once you scan without exporting, that history is gone.
+
+### 4. Add sources as network paths — never local paths
+
+The most consequential step. Kodi stores the literal path string in the shared DB,
+so every client has to reach the media by the *same* string.
+
+```diff
++ nfs://192.168.1.30/volume1/Movies    ← resolves identically on every client
++ smb://192.168.1.30/Movies
+- /mnt/media/Movies                    ← local mount: unreachable from other clients
+- D:\Media\Movies                      ← drive letter: same problem
+```
+
+A local path added on one client is unreachable from every other client, and
+re-adding the same media under a different path creates duplicate entries with
+independent watched state.
+
+### 5. Scan the library
+
+Let it run to completion. This client builds the library that everyone else reads.
+
+### 6. Roll out the remaining clients
+
+Each additional client needs **two** files in its `userdata` folder, not one:
+
+| File | Shared via DB? | Action |
+|---|---|---|
+| `advancedsettings.xml` | No | Copy verbatim from the first client |
+| `sources.xml` | **No** — sources are per-client | Copy it too, or re-add sources using byte-identical paths |
+
+Restart each client fully. They should show the complete library immediately,
+with no scan required.
+
+> [!CAUTION]
+> Keep every client on the **same Kodi major version**. The schema version is
+> baked into the DB name (`MyVideos121`), and a newer client will migrate the
+> database out from under the older ones — which strands them on a schema that
+> no longer exists.
+
+### 7. Designate a single scanner
+
+> [!TIP]
+> On every client *except* one, turn off Settings → Media → Library →
+> **Update library on startup**. Concurrent scans against one database cause lock
+> contention and duplicate entries. Pick whichever box is always on.
+
+### Expected behaviour that looks like a bug
+
+> [!NOTE]
+>
+> - **Artwork and thumbnails are cached locally per client.** Only metadata is
+>   shared, so each client re-downloads its own fanart. This is normal.
+> - **Watched state propagates on library refresh**, not instantly across clients
+>   that are already open and sitting on a list view.
 
 ---
 
 ## Backups & Restore
 
-**This stack does not back itself up.** Copying `/var/lib/docker/volumes/` while
-MariaDB is running captures a torn InnoDB data dir, so Borg gets a logical dump
-instead, staged by a pre-backup hook.
+> [!CAUTION]
+> **This stack does not back itself up.** Copying `/var/lib/docker/volumes/` while
+> MariaDB is running captures a torn InnoDB data dir — an archive that looks fine
+> and restores to a corrupt database.
+
+Borg gets a logical dump instead, staged by a pre-backup hook.
 
 [`borg-prep-kodidb.sh`](borg-prep-kodidb.sh) runs on the Docker host before each
 Borg run and:
@@ -221,8 +410,9 @@ Borg run and:
 5. Atomically `mv`s the staging dir into place, so Borg can never read a
    half-written dump no matter when it starts.
 
-Dumps are left **uncompressed on purpose** — a gzipped dump changes wholesale
-every run and defeats deduplication. Let Borg compress (`borg create -C zstd`).
+> [!TIP]
+> Dumps are left **uncompressed on purpose** — a gzipped dump changes wholesale
+> every run and defeats deduplication. Let Borg compress (`borg create -C zstd`).
 
 Retention is **Borg's** job now: the script keeps exactly one current snapshot and
 your Borg prune policy provides the point-in-time history.
@@ -251,6 +441,7 @@ your Borg prune policy provides the point-in-time history.
    ls -la /var/backups/borg-kodidb/latest/databases/
    ```
 
+> [!NOTE]
 > If this host already runs a `borg-prep-appdata-*.sh` script, the two are
 > independent — this one uses its own `/var/backups/borg-kodidb` base so neither
 > can clobber the other's atomic publish. You can call it from the existing prep
@@ -281,6 +472,7 @@ databases can be restored individually. Replay `_users-and-grants.sql` if the
 `metadata/snapshot-info.txt` first — the database name encodes the Kodi schema
 version, and restoring into a different Kodi release will not end well.
 
+> [!WARNING]
 > Always take a fresh dump **before** a major Kodi upgrade — a bad schema
 > migration can wipe watched history.
 
@@ -300,16 +492,35 @@ version, and restoring into a different Kodi release will not end well.
 
 ## Troubleshooting
 
-| Symptom | Likely cause / fix |
-|---|---|
-| Kodi shows an empty/local library | `advancedsettings.xml` not loaded — check path and restart Kodi fully. |
-| `docker exec` stops at `Enter password:` | The password expanded to nothing because your host shell, not the container, evaluated `$MARIADB_PASSWORD`. Single-quote the command — see [Database Setup](#database-setup) option A. |
-| `bash: docker: command not found` | You're already inside the container (Portainer Console). Drop the `docker exec` wrapper — see [Database Setup](#database-setup) option B. |
-| `Access denied for user 'kodi'` | Global grant not applied — re-run the [grant command](#database-setup). If the grant itself is fine, the volume was initialized with a different password: `MARIADB_PASSWORD` only applies on **first** init, so reset it with `ALTER USER 'kodi'@'%' IDENTIFIED BY '…';` as root. |
-| Watched state differs per device | Media added via different source paths — use identical `nfs://`/`smb://` paths everywhere. |
-| `container mariadb-kodi is not running` from the hook | The stack is down, or renamed — set `KODI_DB_CONTAINER` if you changed `container_name`. |
-| `cannot authenticate as root` from the hook | The container's `MARIADB_ROOT_PASSWORD` no longer matches the initialized data dir. The env var only applies on **first** init; changing it later does nothing. |
-| Dumps exist but aren't in Borg archives | `/var/backups/borg-kodidb/latest` was never added to Borg's backup paths. |
-| `bash\r: no such file or directory` | `borg-prep-kodidb.sh` was checked out with CRLF endings. Ensure [`.gitattributes`](.gitattributes) is present, then `git rm --cached borg-prep-kodidb.sh && git checkout borg-prep-kodidb.sh`. |
-| `missing its completion marker` | The dump was truncated — usually the container was stopped mid-run or the host filled up. Check free space on `/var/backups`. |
-| Can't connect from a client | Confirm `MARIADB_PORT` is reachable on the Docker host and not blocked by a firewall/VLAN. |
+### 🎬 Kodi clients
+
+| | Symptom | Likely cause / fix |
+|---|---|---|
+| 🔴 | Kodi shows an empty/local library | `advancedsettings.xml` not loaded — check the path and restart Kodi fully. Confirm in `kodi.log`; Kodi falls back to local SQLite **silently**. See [step 2](#2-confirm-it-actually-connected). |
+| 🔴 | Can't connect from a client | Confirm `MARIADB_PORT` is reachable on the Docker host and not blocked by a firewall/VLAN. |
+| 🟠 | Media plays on one client, "file not found" on another | A source was added by local path instead of `nfs://`/`smb://`. See [step 4](#4-add-sources-as-network-paths--never-local-paths). |
+| 🟠 | Watched state differs per device | Same cause — media added via different source paths. Use identical `nfs://`/`smb://` paths everywhere. |
+| 🟠 | Duplicate entries for the same media | The same files were added under two different source paths. |
+| 🔵 | Library is empty after switching to MySQL | Expected — local libraries are not migrated. Export to `.nfo` first, then rescan. See [step 3](#3-expect-an-empty-library). |
+| 🔵 | `MyVideos*` databases never appear | No client has successfully connected yet. Kodi creates them on first connection. |
+| 🔵 | A client sees the library but has no artwork | Expected — the texture cache is local per client and rebuilds itself. |
+
+### 🗄️ Database & shell
+
+| | Symptom | Likely cause / fix |
+|---|---|---|
+| 🔴 | `Access denied for user 'kodi'` | Global grant not applied — re-run the [grant command](#database-setup). If the grant is fine, the volume was initialized with a different password: `MARIADB_PASSWORD` only applies on **first** init, so reset it with `ALTER USER 'kodi'@'%' IDENTIFIED BY '…';` as root. |
+| 🟠 | `docker exec` stops at `Enter password:` | The password expanded to nothing because your **host** shell, not the container, evaluated `$MARIADB_PASSWORD`. Single-quote it — see [Option A](#option-a--from-the-docker-host). |
+| 🟠 | `bash: docker: command not found` | You're already inside the container (Portainer Console). Drop the `docker exec` wrapper — see [Option B](#option-b--inside-the-container). |
+
+### 💾 Backup hook
+
+| | Symptom | Likely cause / fix |
+|---|---|---|
+| 🔴 | Dumps exist but aren't in Borg archives | `/var/backups/borg-kodidb/latest` was never added to Borg's backup paths. |
+| 🔴 | `cannot authenticate as root` | The container's `MARIADB_ROOT_PASSWORD` no longer matches the initialized data dir. The env var only applies on **first** init; changing it later does nothing. |
+| 🟠 | `container mariadb-kodi is not running` | The stack is down, or renamed — set `KODI_DB_CONTAINER` if you changed `container_name`. |
+| 🟠 | `missing its completion marker` | The dump was truncated — usually the container was stopped mid-run or the host filled up. Check free space on `/var/backups`. |
+| 🟠 | `bash\r: no such file or directory` | `borg-prep-kodidb.sh` was checked out with CRLF endings. Ensure [`.gitattributes`](.gitattributes) is present, then `git rm --cached borg-prep-kodidb.sh && git checkout borg-prep-kodidb.sh`. |
+
+<sub>🔴 breaks the shared library · 🟠 causes wrong or inconsistent behaviour · 🔵 expected, not a fault</sub>
