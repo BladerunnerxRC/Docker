@@ -1,0 +1,4 @@
+# This repo is edited on Windows (core.autocrlf=true) but borg-prep-kodidb.sh is
+# deployed to a Linux host. CRLF line endings would break its shebang, so pin
+# shell scripts to LF.
+*.sh text eol=lf

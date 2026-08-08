@@ -22,37 +22,11 @@ services:
       timeout: 10s
       retries: 5
 
-  mariadb-kodi-backup:
-    image: mariadb:11
-    container_name: mariadb-kodi-backup
-    restart: unless-stopped
-    depends_on:
-      - mariadb-kodi
-    environment:
-      TZ: ${TZ}
-      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
-      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS}
-    volumes:
-      - kodi-db-backups:/backups                     # backup dumps (NAS via NFS)
-    entrypoint: >
-      bash -c '
-      while true; do
-        mariadb-dump -h mariadb-kodi -uroot -p"$$MARIADB_ROOT_PASSWORD" \
-          --all-databases --single-transaction --events \
-          | gzip > /backups/kodi-$$(date +%Y%m%d-%H%M%S).sql.gz;
-        find /backups -name "kodi-*.sql.gz" -mtime +$$BACKUP_RETENTION_DAYS -delete;
-        sleep 86400;
-      done'
+# Backups are NOT handled by this stack. Borg drives them: it calls
+# borg-prep-kodidb.sh on the host, which dumps the DB to /var/backups/borg-kodidb/latest
+# and lets Borg archive, deduplicate, and prune. See the README.
 
 volumes:
   # DB data on the Docker host's local disk (safe for InnoDB).
   # Docker-managed named volume lives under /var/lib/docker/volumes/.
   kodi-db-data:
-
-  # Backups on the NAS via NFS.
-  kodi-db-backups:
-    driver: local
-    driver_opts:
-      type: nfs
-      o: "addr=${NAS_HOST},nfsvers=4,rw,hard,noatime"
-      device: ":${NAS_EXPORT}/backups"
