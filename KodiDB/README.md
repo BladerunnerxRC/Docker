@@ -45,8 +45,8 @@ and you only scrape/maintain metadata once.
 flowchart LR
     subgraph clients["🎬 Kodi Clients"]
         direction TB
-        K1["Living Room<br/>LibreELEC"]
-        K2["Bedroom<br/>Android"]
+        K1["NVIDIA Shield Pro<br/>Android TV"]
+        K2["Living Room<br/>LibreELEC"]
         K3["Desktop<br/>Windows"]
     end
 
@@ -110,6 +110,15 @@ run, which stages SQL dumps at `/var/backups/borg-kodidb/latest` for Borg to arc
 - Kodi clients on the **same Kodi major version** (the DB schema is tied to it).
 - All clients must reference media via **identical network paths** (`nfs://`, `smb://`) —
   not local drive paths — or watched states won't match across devices.
+
+> [!TIP]
+> An **NVIDIA Shield Pro** makes a good anchor client: it's typically always on,
+> which suits the [designated scanner](#7-designate-a-single-scanner) role. It is
+> also the fiddliest client to configure — Android scoped storage makes dropping
+> `advancedsettings.xml` into place non-obvious, and Play Store auto-updates can
+> bump Kodi's major version behind your back. Both are covered below:
+> [Shield Pro setup](#getting-the-file-onto-an-nvidia-shield-pro) and
+> [Maintenance](#maintenance--upgrades).
 
 ---
 
@@ -222,7 +231,7 @@ On **each** Kodi client, edit (or create) `advancedsettings.xml` in the Kodi
 |---|---|
 | Windows | `%APPDATA%\Kodi\userdata\advancedsettings.xml` |
 | Linux | `~/.kodi/userdata/advancedsettings.xml` |
-| Android | `Android/data/org.xbmc.kodi/files/.kodi/userdata/advancedsettings.xml` |
+| **NVIDIA Shield Pro** / Android TV | `/sdcard/Android/data/org.xbmc.kodi/files/.kodi/userdata/advancedsettings.xml` |
 | LibreELEC / CoreELEC | `/storage/.kodi/userdata/advancedsettings.xml` |
 | macOS | `~/Library/Application Support/Kodi/userdata/advancedsettings.xml` |
 
@@ -260,6 +269,40 @@ Contents:
 > - `<host>` is the **Docker host** IP (the machine running this stack), **not** the NAS.
 > - `<user>`/`<pass>` must match `MARIADB_USER`/`MARIADB_PASSWORD`.
 
+### Getting the file onto an NVIDIA Shield Pro
+
+Android's scoped storage hides `Android/data/` from the built-in file manager and
+from most SMB/network shares, so you can't simply copy the file across. Two
+approaches that do work:
+
+**Option 1 — ADB over the network** (most reliable, no extra apps):
+
+1. On the Shield: **Settings → Device Preferences → About**, click **Build**
+   seven times to unlock Developer options.
+2. **Settings → Device Preferences → Developer options**, enable
+   **Network debugging**. Note the IP it shows.
+3. From any machine with `adb` installed:
+
+   ```bash
+   adb connect 192.168.1.50:5555          # the Shield's IP
+   adb push advancedsettings.xml \
+     /sdcard/Android/data/org.xbmc.kodi/files/.kodi/userdata/advancedsettings.xml
+   adb disconnect
+   ```
+
+   The Shield shows an on-screen prompt to authorise the connection the first
+   time — accept it, or the push fails silently on some Shield Experience builds.
+
+**Option 2 — Kodi's own file manager**: install a file manager add-on inside
+Kodi, or use **Settings → File manager** to copy the file from a network source
+into `special://profile/`. Kodi runs as the owner of its own data directory, so
+it can write there when Android's file pickers cannot.
+
+> [!TIP]
+> Whichever route you use, write the file **before** the first Kodi launch if you
+> can. A Shield that has already built a local library will keep showing it until
+> you restart, which makes it easy to think the config didn't apply.
+
 > [!IMPORTANT]
 > Writing this file is only step one. Continue to
 > [First Run & Client Rollout](#first-run--client-rollout) — the steps there
@@ -280,8 +323,14 @@ read once, at startup.
 | Platform | How |
 |---|---|
 | Windows / macOS / Linux | Quit the app entirely, then relaunch |
-| Android | Settings → Apps → Kodi → **Force stop**, then reopen |
+| **NVIDIA Shield Pro** / Android TV | Settings → Apps → See all apps → Kodi → **Force stop**, then reopen |
 | LibreELEC / CoreELEC | `systemctl restart kodi` |
+
+> [!WARNING]
+> On the Shield, backing out of Kodi with the Home button does **not** stop it —
+> Android keeps it resident and it will not re-read `advancedsettings.xml`.
+> **Force stop** is required. (`adb shell am force-stop org.xbmc.kodi` works too
+> if you already have network debugging enabled.)
 
 ### 2. Confirm it actually connected
 
@@ -296,9 +345,16 @@ Check `kodi.log` for the connection:
 |---|---|
 | Windows | `%APPDATA%\Kodi\kodi.log` |
 | Linux | `~/.kodi/temp/kodi.log` |
-| Android | `Android/data/org.xbmc.kodi/files/.kodi/temp/kodi.log` |
+| **NVIDIA Shield Pro** / Android TV | `/sdcard/Android/data/org.xbmc.kodi/files/.kodi/temp/kodi.log` |
 | LibreELEC / CoreELEC | `/storage/.kodi/temp/kodi.log` |
 | macOS | `~/Library/Logs/kodi.log` |
+
+On the Shield, pull the log the same way you pushed the config:
+
+```bash
+adb connect 192.168.1.50:5555
+adb pull /sdcard/Android/data/org.xbmc.kodi/files/.kodi/temp/kodi.log
+```
 
 What to look for:
 
@@ -372,7 +428,17 @@ with no scan required.
 > [!TIP]
 > On every client *except* one, turn off Settings → Media → Library →
 > **Update library on startup**. Concurrent scans against one database cause lock
-> contention and duplicate entries. Pick whichever box is always on.
+> contention and duplicate entries.
+
+The **NVIDIA Shield Pro** is usually the right choice for the scanner role — it's
+mains-powered, always on, and has a wired network connection. Two caveats:
+
+- **Stop it sleeping through the scan.** Settings → Device Preferences → Sleep,
+  set to **Never** (or long enough to cover your scheduled update window). A
+  sleeping Shield silently skips its library update.
+- **Wired Ethernet matters** for the initial scan. Scraping a large library over
+  Wi-Fi while hammering MariaDB is where most "scan takes all night" complaints
+  come from.
 
 ### Expected behaviour that looks like a bug
 
@@ -488,6 +554,19 @@ version, and restoring into a different Kodi release will not end well.
 - **Buffer pool:** if the library is large and the host has RAM, raise
   `INNODB_BUFFER_POOL_SIZE` for faster browsing.
 
+> [!CAUTION]
+> **Disable Play Store auto-updates for Kodi on the NVIDIA Shield Pro.** This is
+> the most likely way a shared library breaks unattended: the Shield updates Kodi
+> overnight, the new version migrates the database to a new schema
+> (`MyVideos121` → `MyVideos131`), and every *other* client — still on the old
+> release — wakes up pointing at a database that no longer exists. They fall back
+> to empty local libraries, and the watched state accumulated since the upgrade
+> is split across two schemas.
+>
+> On the Shield: **Play Store → Kodi → ⋮ / Options → uncheck Auto-update**. Then
+> upgrade Kodi deliberately, on every client, in one sitting — and
+> [take a dump first](#backups--restore).
+
 ---
 
 ## Troubleshooting
@@ -504,6 +583,16 @@ version, and restoring into a different Kodi release will not end well.
 | 🔵 | Library is empty after switching to MySQL | Expected — local libraries are not migrated. Export to `.nfo` first, then rescan. See [step 3](#3-expect-an-empty-library). |
 | 🔵 | `MyVideos*` databases never appear | No client has successfully connected yet. Kodi creates them on first connection. |
 | 🔵 | A client sees the library but has no artwork | Expected — the texture cache is local per client and rebuilds itself. |
+
+### 📺 NVIDIA Shield Pro
+
+| | Symptom | Likely cause / fix |
+|---|---|---|
+| 🔴 | Every other client went empty overnight | Kodi auto-updated on the Shield and migrated the DB to a new schema. See the [Maintenance caution](#maintenance--upgrades) — disable Play Store auto-update and bring all clients to the same version. |
+| 🟠 | Config changes don't take effect | Home button doesn't stop Kodi on Android. **Force stop** it — see [step 1](#1-fully-restart-kodi). |
+| 🟠 | Can't reach `Android/data/` to place the file | Android scoped storage hides it from file managers and SMB. Use ADB or Kodi's own file manager — see [Shield Pro setup](#getting-the-file-onto-an-nvidia-shield-pro). |
+| 🟠 | `adb push` reports success but nothing changes | The on-screen authorisation prompt was never accepted. Reconnect and watch the TV. |
+| 🟠 | Scheduled library update never runs | The Shield slept. Settings → Device Preferences → Sleep → **Never**. |
 
 ### 🗄️ Database & shell
 

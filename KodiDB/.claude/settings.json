@@ -10,7 +10,8 @@
       "Bash(node -e \"console.log\\('node',process.version\\)\")",
       "Bash(npm ls *)",
       "Bash(npm init *)",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Bash(node \"C:/Users/Thoma/AppData/Local/Temp/claude/c--Users-Thoma-OneDrive-Documents-CODE-GitHub-Docker-KodiDB/ff3ccf64-f46a-4dcb-9545-0419af24e4cf/scratchpad/check.mjs\")"
     ]
   }
 }
