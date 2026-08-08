@@ -52,7 +52,8 @@ and you only scrape/maintain metadata once.
 
 ## Environment Variables
 
-Set these in Portainer's **Stack → Environment variables** section.
+Set these in Portainer's **Stack → Environment variables** section, or copy
+[`.env.example`](.env.example) to `.env` if you deploy with `docker compose` directly.
 
 | Name | Example | Description |
 |---|---|---|
