@@ -681,6 +681,7 @@ version, and restoring into a different Kodi release will not end well.
 | 🔴 | Grant applied, but clients still rejected | You verified over the Unix socket; Kodi connects over TCP. Re-test with `-h127.0.0.1` — see [Rotating the Kodi password](#rotating-the-kodi-password). |
 | 🟠 | `docker exec` stops at `Enter password:` | The password expanded to nothing because your **host** shell, not the container, evaluated `$MARIADB_PASSWORD`. Single-quote it — see [Option A](#option-a--from-the-docker-host). |
 | 🟠 | `bash: docker: command not found` | You're already inside the container (Portainer Console). Drop the `docker exec` wrapper — see [Option B](#option-b--inside-the-container). |
+| 🔵 | `io_uring_queue_init() failed with EPERM` / `create_uring failed: falling back to libaio` | **Expected, ignore it.** The host has io_uring disabled (`kernel.io_uring_disabled=2`) as kernel hardening — Ubuntu 24.04+ ships this way, and Docker's seccomp profile blocks the syscalls too. MariaDB falls back to libaio, its previous default, which is entirely adequate for a library this size. Don't relax the sysctl for it. Note `innodb_use_native_aio=OFF` would silence the warning but switches to *simulated* AIO — worse than the libaio you already have. |
 
 ### 💾 Backup hook
 
