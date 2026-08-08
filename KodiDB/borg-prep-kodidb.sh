@@ -117,7 +117,7 @@ fi
 # -----------------------------
 # Restore metadata
 # -----------------------------
-# The DB name encodes the Kodi schema version (MyVideos121 = a specific Kodi
+# The DB name encodes the Kodi schema version (MyVideos131 = a specific Kodi
 # release), so record what produced this snapshot.
 {
   date -Is

@@ -136,6 +136,37 @@ Set these in Portainer's **Stack → Environment variables** section, or copy
 | `MARIADB_PORT` | ![optional](https://img.shields.io/badge/optional-6C757D?style=flat-square) | `3306` | Host port exposed for Kodi clients. |
 | `INNODB_BUFFER_POOL_SIZE` | ![optional](https://img.shields.io/badge/optional-6C757D?style=flat-square) | `512M` | InnoDB cache size. Raise if RAM allows. |
 
+### Password characters that will break this stack
+
+> [!CAUTION]
+> **Use alphanumeric passwords.** The same string passes through three layers
+> that each treat punctuation as syntax, and all three fail *silently* — you get
+> `Access denied ... (using password: YES)` with nothing to indicate the password
+> was mangled rather than simply wrong.
+
+| Character | Where it breaks | What happens |
+|---|---|---|
+| `$` | Compose / Portainer interpolation | `FW#$Fg2435G` becomes `FW#` — `$Fg2435G` is read as an undefined variable and expands to nothing. The container gets a 3-character password while Kodi sends 11. Escape as `$$` if unavoidable. |
+| `#` | `.env` comment parsing | Can truncate the value at the `#`, depending on the parser. |
+| `&` `<` `>` | XML | Must be escaped (`&amp;` `&lt;` `&gt;`) in `advancedsettings.xml`, where Kodi reads the same password back. |
+
+Prefer a long `A-Za-z0-9` string — length beats symbol variety here, and none of
+these layers can corrupt it.
+
+To check what the container actually received, without printing the secret:
+
+```bash
+docker exec mariadb-kodi sh -c 'echo "${#MARIADB_PASSWORD} chars"'
+```
+
+If that count doesn't match the password you set, interpolation ate part of it.
+
+> [!IMPORTANT]
+> Changing these variables later does **not** change the running database.
+> MariaDB reads them only when the `kodi-db-data` volume is first initialized.
+> To rotate a password afterwards you must also run `ALTER USER` against the live
+> server — see [Rotating the Kodi password](#rotating-the-kodi-password).
+
 The backup script reads the root password from the running container's own
 environment, so it needs no credentials of its own. It accepts optional overrides
 as environment variables — `KODI_DB_CONTAINER` (default `mariadb-kodi`),
@@ -165,7 +196,7 @@ as environment variables — `KODI_DB_CONTAINER` (default `mariadb-kodi`),
 
 ## Database Setup
 
-Kodi manages its **own versioned databases** (`MyVideos121`, `MyMusic82`, …) and
+Kodi manages its **own versioned databases** (`MyVideos131`, `MyMusic83`, …) and
 creates/drops them automatically, so the `kodi` user needs **global privileges**
 (`*.*`) — not access to a single named database.
 
@@ -219,6 +250,53 @@ MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" -e "SELECT 1;"
 
 You do **not** need to manually create any `MyVideos*` / `MyMusic*` databases —
 Kodi builds them on first connection from a client.
+
+### Rotating the Kodi password
+
+Needed whenever the stored password and the one in `advancedsettings.xml` have
+drifted apart — after a mangled `$`, or because `MARIADB_PASSWORD` was changed in
+Portainer and the volume already existed. **Editing the environment variable is
+not enough on its own**; it only applies at first initialization.
+
+Inspect the account first — this confirms the user exists and shows which hosts
+it can connect from:
+
+```bash
+docker exec -i mariadb-kodi sh -c 'export MYSQL_PWD="$MARIADB_ROOT_PASSWORD"; exec mariadb -uroot' <<'SQL'
+SELECT user, host, plugin FROM mysql.user WHERE user='kodi';
+SHOW GRANTS FOR 'kodi'@'%';
+SQL
+```
+
+Then set the new password on the live server and re-assert the global grant:
+
+```bash
+docker exec -i mariadb-kodi sh -c 'export MYSQL_PWD="$MARIADB_ROOT_PASSWORD"; exec mariadb -uroot' <<'SQL'
+ALTER USER 'kodi'@'%' IDENTIFIED BY 'NewAlnumPassword123';
+GRANT ALL PRIVILEGES ON *.* TO 'kodi'@'%';
+FLUSH PRIVILEGES;
+SQL
+```
+
+Confirm it works over **TCP**, which is the path Kodi actually uses — a Unix
+socket test can pass while remote clients still fail:
+
+```bash
+docker exec -it mariadb-kodi sh -c \
+  'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -h127.0.0.1 -u"$MARIADB_USER" -e "SELECT 1;"'
+```
+
+Finally, update the value in **three** places or they will drift again:
+
+1. The Portainer stack environment variable (so a future volume rebuild matches).
+2. `advancedsettings.xml` on **every** client.
+3. Fully restart Kodi on each — see [step 1](#1-fully-restart-kodi).
+
+> [!NOTE]
+> If root itself is rejected here, `MARIADB_ROOT_PASSWORD` was mangled the same
+> way and you cannot authenticate at all. Recovery means restarting the container
+> with `--skip-grant-tables` to reset it, or — if the library is disposable —
+> deleting the `kodi-db-data` volume and re-initializing with a clean password.
 
 ---
 
@@ -359,7 +437,7 @@ adb pull /sdcard/Android/data/org.xbmc.kodi/files/.kodi/temp/kodi.log
 What to look for:
 
 ```diff
-+ Running database version MyVideos121          ← connected to MariaDB
++ Running database version MyVideos131          ← connected to MariaDB
 - Unable to open database ... [1045]            ← bad credentials or missing grant
 ```
 
@@ -419,7 +497,7 @@ with no scan required.
 
 > [!CAUTION]
 > Keep every client on the **same Kodi major version**. The schema version is
-> baked into the DB name (`MyVideos121`), and a newer client will migrate the
+> baked into the DB name (`MyVideos131`), and a newer client will migrate the
 > database out from under the older ones — which strands them on a schema that
 > no longer exists.
 
@@ -529,7 +607,7 @@ borg extract ::ARCHIVE var/backups/borg-kodidb/latest
 
 # Restore one database (or loop over the directory for all of them)
 docker exec -i mariadb-kodi sh -c 'export MYSQL_PWD="$MARIADB_ROOT_PASSWORD"; exec mariadb -uroot' \
-  < var/backups/borg-kodidb/latest/databases/MyVideos121.sql
+  < var/backups/borg-kodidb/latest/databases/MyVideos131.sql
 ```
 
 Each file carries its own `CREATE DATABASE IF NOT EXISTS` / `USE` header, so
@@ -547,7 +625,7 @@ version, and restoring into a different Kodi release will not end well.
 ## Maintenance & Upgrades
 
 - **Keep Kodi versions in sync.** The DB name encodes the schema version
-  (`MyVideos121` = a specific Kodi release). Mixing Kodi versions against one DB
+  (`MyVideos131` = a specific Kodi release). Mixing Kodi versions against one DB
   causes conflicts — upgrade all clients together.
 - **Updating the MariaDB image:** pull the new image and recreate; the
   `kodi-db-data` volume persists your data.
@@ -558,7 +636,7 @@ version, and restoring into a different Kodi release will not end well.
 > **Disable Play Store auto-updates for Kodi on the NVIDIA Shield Pro.** This is
 > the most likely way a shared library breaks unattended: the Shield updates Kodi
 > overnight, the new version migrates the database to a new schema
-> (`MyVideos121` → `MyVideos131`), and every *other* client — still on the old
+> (`MyVideos131` → a new `MyVideos1xx`), and every *other* client — still on the old
 > release — wakes up pointing at a database that no longer exists. They fall back
 > to empty local libraries, and the watched state accumulated since the upgrade
 > is split across two schemas.
@@ -598,7 +676,9 @@ version, and restoring into a different Kodi release will not end well.
 
 | | Symptom | Likely cause / fix |
 |---|---|---|
-| 🔴 | `Access denied for user 'kodi'` | Global grant not applied — re-run the [grant command](#database-setup). If the grant is fine, the volume was initialized with a different password: `MARIADB_PASSWORD` only applies on **first** init, so reset it with `ALTER USER 'kodi'@'%' IDENTIFIED BY '…';` as root. |
+| 🔴 | `Access denied for user 'kodi'@'<client-ip>' (using password: YES)` in `kodi.log` | The network is fine — this is authentication only. Both sides have a password; they don't match. Most likely a `$` in the password was eaten by Compose/Portainer interpolation, or the volume was initialized with an older password. Check the length with `echo "${#MARIADB_PASSWORD}"` inside the container, then [rotate it](#rotating-the-kodi-password). See [password characters](#password-characters-that-will-break-this-stack). |
+| 🔴 | `Access denied for user 'kodi'` with `using password: NO` | No password reached the server at all — an empty `<pass>` in `advancedsettings.xml`, or an unquoted shell variable that expanded to nothing. |
+| 🔴 | Grant applied, but clients still rejected | You verified over the Unix socket; Kodi connects over TCP. Re-test with `-h127.0.0.1` — see [Rotating the Kodi password](#rotating-the-kodi-password). |
 | 🟠 | `docker exec` stops at `Enter password:` | The password expanded to nothing because your **host** shell, not the container, evaluated `$MARIADB_PASSWORD`. Single-quote it — see [Option A](#option-a--from-the-docker-host). |
 | 🟠 | `bash: docker: command not found` | You're already inside the container (Portainer Console). Drop the `docker exec` wrapper — see [Option B](#option-b--inside-the-container). |
 
