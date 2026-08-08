@@ -100,7 +100,11 @@ creates/drops them automatically, so the `kodi` user needs **global privileges**
 The `MARIADB_USER`/`MARIADB_PASSWORD` env vars create the user, but only grant it
 rights to one default DB. After the stack's first start, run the global grant once:
 
-**Via Portainer** → `mariadb-kodi` container → **Console** (`/bin/bash`), or from the Docker host:
+Pick **one** of the two places below — the commands are not interchangeable.
+The passwords live in the *container's* environment, so whichever shell you use,
+the expansion has to happen inside the container.
+
+**A. From the Docker host** (there is a `docker` CLI here):
 
 ```bash
 docker exec -i mariadb-kodi sh -c 'export MYSQL_PWD="$MARIADB_ROOT_PASSWORD"; exec mariadb -uroot' <<'SQL'
@@ -116,10 +120,27 @@ docker exec -it mariadb-kodi sh -c \
   'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" -e "SELECT 1;"'
 ```
 
-> **Single-quote these commands.** The passwords live in the *container's*
-> environment, not your host shell. Writing `-p"$MARIADB_ROOT_PASSWORD"`
-> unquoted lets the host shell expand it to an empty string, and the client
-> stops at an `Enter password:` prompt instead of authenticating.
+> **Single-quote these.** Writing `-p"$MARIADB_ROOT_PASSWORD"` unquoted lets the
+> *host* shell expand it to an empty string, and the client stops at an
+> `Enter password:` prompt instead of authenticating.
+
+**B. Inside the container** — Portainer → `mariadb-kodi` → **Console** (`/bin/bash`),
+or `docker exec -it mariadb-kodi bash`. There is no `docker` CLI in here, so drop
+the wrapper; the variables are already in scope:
+
+```bash
+export MYSQL_PWD="$MARIADB_ROOT_PASSWORD"
+mariadb -uroot <<'SQL'
+GRANT ALL PRIVILEGES ON *.* TO 'kodi'@'%';
+FLUSH PRIVILEGES;
+SQL
+```
+
+Verify the user can connect:
+
+```bash
+MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" -e "SELECT 1;"
+```
 
 You do **not** need to manually create any `MyVideos*` / `MyMusic*` databases —
 Kodi builds them on first connection from a client.
@@ -282,7 +303,8 @@ version, and restoring into a different Kodi release will not end well.
 | Symptom | Likely cause / fix |
 |---|---|
 | Kodi shows an empty/local library | `advancedsettings.xml` not loaded — check path and restart Kodi fully. |
-| `docker exec` stops at `Enter password:` | The password expanded to nothing because your host shell, not the container, evaluated `$MARIADB_PASSWORD`. Single-quote the command as shown in [Database Setup](#database-setup). |
+| `docker exec` stops at `Enter password:` | The password expanded to nothing because your host shell, not the container, evaluated `$MARIADB_PASSWORD`. Single-quote the command — see [Database Setup](#database-setup) option A. |
+| `bash: docker: command not found` | You're already inside the container (Portainer Console). Drop the `docker exec` wrapper — see [Database Setup](#database-setup) option B. |
 | `Access denied for user 'kodi'` | Global grant not applied — re-run the [grant command](#database-setup). If the grant itself is fine, the volume was initialized with a different password: `MARIADB_PASSWORD` only applies on **first** init, so reset it with `ALTER USER 'kodi'@'%' IDENTIFIED BY '…';` as root. |
 | Watched state differs per device | Media added via different source paths — use identical `nfs://`/`smb://` paths everywhere. |
 | `container mariadb-kodi is not running` from the hook | The stack is down, or renamed — set `KODI_DB_CONTAINER` if you changed `container_name`. |
