@@ -103,17 +103,23 @@ rights to one default DB. After the stack's first start, run the global grant on
 **Via Portainer** → `mariadb-kodi` container → **Console** (`/bin/bash`), or from the Docker host:
 
 ```bash
-docker exec -it mariadb-kodi \
-  mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" \
-  -e "GRANT ALL PRIVILEGES ON *.* TO 'kodi'@'%'; FLUSH PRIVILEGES;"
+docker exec -i mariadb-kodi sh -c 'export MYSQL_PWD="$MARIADB_ROOT_PASSWORD"; exec mariadb -uroot' <<'SQL'
+GRANT ALL PRIVILEGES ON *.* TO 'kodi'@'%';
+FLUSH PRIVILEGES;
+SQL
 ```
 
 Verify the user can connect:
 
 ```bash
-docker exec -it mariadb-kodi \
-  mariadb -ukodi -p"$MARIADB_PASSWORD" -e "SELECT 1;"
+docker exec -it mariadb-kodi sh -c \
+  'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" -e "SELECT 1;"'
 ```
+
+> **Single-quote these commands.** The passwords live in the *container's*
+> environment, not your host shell. Writing `-p"$MARIADB_ROOT_PASSWORD"`
+> unquoted lets the host shell expand it to an empty string, and the client
+> stops at an `Enter password:` prompt instead of authenticating.
 
 You do **not** need to manually create any `MyVideos*` / `MyMusic*` databases —
 Kodi builds them on first connection from a client.
@@ -244,7 +250,7 @@ docker exec mariadb-kodi \
 borg extract ::ARCHIVE var/backups/borg-kodidb/latest
 
 # Restore one database (or loop over the directory for all of them)
-docker exec -i mariadb-kodi mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" \
+docker exec -i mariadb-kodi sh -c 'export MYSQL_PWD="$MARIADB_ROOT_PASSWORD"; exec mariadb -uroot' \
   < var/backups/borg-kodidb/latest/databases/MyVideos121.sql
 ```
 
@@ -276,7 +282,8 @@ version, and restoring into a different Kodi release will not end well.
 | Symptom | Likely cause / fix |
 |---|---|
 | Kodi shows an empty/local library | `advancedsettings.xml` not loaded — check path and restart Kodi fully. |
-| `Access denied for user 'kodi'` | Global grant not applied — re-run the [grant command](#database-setup). |
+| `docker exec` stops at `Enter password:` | The password expanded to nothing because your host shell, not the container, evaluated `$MARIADB_PASSWORD`. Single-quote the command as shown in [Database Setup](#database-setup). |
+| `Access denied for user 'kodi'` | Global grant not applied — re-run the [grant command](#database-setup). If the grant itself is fine, the volume was initialized with a different password: `MARIADB_PASSWORD` only applies on **first** init, so reset it with `ALTER USER 'kodi'@'%' IDENTIFIED BY '…';` as root. |
 | Watched state differs per device | Media added via different source paths — use identical `nfs://`/`smb://` paths everywhere. |
 | `container mariadb-kodi is not running` from the hook | The stack is down, or renamed — set `KODI_DB_CONTAINER` if you changed `container_name`. |
 | `cannot authenticate as root` from the hook | The container's `MARIADB_ROOT_PASSWORD` no longer matches the initialized data dir. The env var only applies on **first** init; changing it later does nothing. |
