@@ -117,7 +117,7 @@ would fail at `docker compose up`. Every deviation:
 | `middlewares=security@file, base@file, auth-traefik@docker` | `tpadmin-ipallow@docker, tpadmin-auth@docker, security-headers@file, compression@file` | None of the upstream middleware names exist here. A router referencing a missing middleware is dropped with a `middleware does not exist` error. |
 | authentik forward-auth (`outpost.goauthentik.io` router) | BasicAuth against the existing `.htpasswd` + IP allowlist | No authentik on this network. See [Security](#security). |
 | `tls.domains[0].main` / `sans` wildcard labels | `tls.certresolver=stepca` | The step-ca resolver issues per-host certs via `tlsChallenge`; no wildcard is requested. |
-| `image: ...:latest` | `image: ...:v0.2.2` | A `latest` pull that changes the config schema rewrites your routing table unattended. |
+| `image: ...:latest` | Built from source, pinned to git tag `v0.2.2` | Upstream ships amd64 only and this host is a Pi 5 ([details](#non-amd64-hosts)). Pinning also stops a `latest` pull from rewriting your routing table unattended. |
 | Watchtower + promtail labels | dropped | Not used in this repo. |
 | No resource limits, no `cap_drop` | Limits, `cap_drop: ALL`, `read_only` | House style — see [Manyfold3D](../Manyfold3D/docker-compose.yml). |
 
@@ -353,20 +353,26 @@ produces a real arm64 image, and leaves everything else in the stack unchanged.
 <details open>
 <summary><strong>Option A — build natively for your architecture (recommended)</strong></summary>
 
-Swap the `image:` line in [docker-compose.yml](docker-compose.yml) for a build from the
-upstream git tag. Compose accepts a Git URL as build context, so nothing needs cloning and
-Portainer handles it in-place:
+**This is what [docker-compose.yml](docker-compose.yml) already ships**, because the
+Traefik host here is a Raspberry Pi 5. Compose accepts a Git URL as build context, so
+nothing needs cloning and Portainer builds it in place — no change required:
 
 ```yaml
   traefik-proxy-admin:
-    # image: ghcr.io/janhouse/traefik-proxy-admin:v0.2.2
     build:
       context: https://github.com/Janhouse/traefik-proxy-admin.git#v0.2.2
     image: traefik-proxy-admin:v0.2.2-local
 ```
 
-Keeping `image:` alongside `build:` names the result, so redeploys reuse it instead of
-rebuilding. Or build it once by hand and leave the compose file's `image:` pointing at the
+`image:` alongside `build:` **names the build output**, so redeploys reuse it instead of
+rebuilding every time.
+
+> [!TIP]
+> **On an amd64 host, prefer the published image** — drop the `build:` block and use
+> `image: ghcr.io/janhouse/traefik-proxy-admin:v0.2.2` instead. There is no reason to
+> compile what upstream already ships for your architecture.
+
+You can also build it once by hand and leave the compose file's `image:` pointing at the
 local tag:
 
 🖥️
@@ -890,23 +896,37 @@ of a running Postgres is crash-consistent at best; prefer the dump.
 
 ## Maintenance & upgrades
 
-**Upgrading the app.** Bump the tag in [docker-compose.yml](docker-compose.yml) and
-redeploy. Migrations run automatically on boot. Current pin:
+**Upgrading the app.** Migrations run automatically on boot, so an upgrade is a version
+bump plus a redeploy. Take a dump first — the migrations are one-way.
+
+This stack **builds from source** ([why](#non-amd64-hosts)), so upgrading means bumping the
+git ref *and* the local tag in [docker-compose.yml](docker-compose.yml), then rebuilding:
+
+```yaml
+    build:
+      context: https://github.com/Janhouse/traefik-proxy-admin.git#v0.2.3
+    image: traefik-proxy-admin:v0.2.3-local
+```
+
+```bash
+docker compose build --pull traefik-proxy-admin && docker compose up -d
+```
+
+> [!IMPORTANT]
+> **Portainer's "Pull and redeploy" does nothing here.** There is no registry behind
+> `traefik-proxy-admin:v0.2.2-local`, so the pull is a no-op and the old image keeps
+> running. An upgrade that reports success while changing nothing is expected, not a
+> fault — use *Update the stack* with **re-pull/rebuild** enabled, or the CLI above.
+>
+> Bump the `image:` tag along with the git ref. Reusing the same local tag makes Compose
+> reuse the cached image and skip the rebuild entirely.
+
+Upstream tags: `v0.2`, `v0.2.1`, `v0.2.2`, `latest` — **all `linux/amd64` only**. On an
+amd64 host you would instead pin the published image, currently:
 
 ```text
 ghcr.io/janhouse/traefik-proxy-admin:v0.2.2
 sha256:7a86202ab3855f09ef5a8b97350306917114efaba7c3dc04b6eb13fdddea9496
-```
-
-Published tags: `v0.2`, `v0.2.1`, `v0.2.2`, `latest` — **all `linux/amd64` only**. Take a
-dump before upgrading; the migrations are one-way.
-
-If you took [Option A](#non-amd64-hosts) and build locally, upgrading means bumping the
-git ref and rebuilding rather than pulling:
-
-```bash
-docker build -t traefik-proxy-admin:v0.2.3-local \
-  https://github.com/Janhouse/traefik-proxy-admin.git#v0.2.3
 ```
 
 then point `image:` at the new local tag and redeploy. Portainer's "Pull and redeploy"
@@ -1135,7 +1155,8 @@ deleting the stack:
 | --- | --- | --- |
 | DNS rewrite `tpadmin.shome` | [Step 3](#step-3--add-the-dns-record) | AdGuard Home → Filters → DNS rewrites → delete |
 | BasicAuth user `tpadmin` | [Step 2](#step-2--create-a-basicauth-user) | `sudo htpasswd -D /opt/netlab-stack/traefik/auth/.htpasswd tpadmin` |
-| Container images | [Step 4](#step-4--deploy-the-stack-in-portainer) | `docker rmi ghcr.io/janhouse/traefik-proxy-admin:v0.2.2` |
+| Container images | [Step 4](#step-4--deploy-the-stack-in-portainer) | `docker rmi traefik-proxy-admin:v0.2.2-local postgres:16-alpine` |
+| Build cache from the source build | [Step 4](#step-4--deploy-the-stack-in-portainer) | `docker builder prune` — the Next.js build leaves several GB behind |
 
 > [!CAUTION]
 > Use `htpasswd -D` to delete a single user. Never "clean up" by deleting or recreating
