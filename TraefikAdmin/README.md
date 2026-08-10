@@ -141,38 +141,78 @@ Commands marked 🖥️ run on the Docker host (smiddleware). Everything else is
 
 ### Step 1 — Preflight
 
-Confirm the things this stack depends on already exist.
+> [!IMPORTANT]
+> **Every 🖥️ command in this guide runs on the host where Traefik itself runs** — the
+> machine [traefik/README.md](../traefik/README.md#runtime-layout-smiddleware) calls
+> *smiddleware*, which is `192.168.200.98` in
+> [30-services.yml](../traefik/dynamic/30-services.yml). This stack reaches Traefik over a
+> **local** Docker bridge, so the two must share a host. It will not work from
+> `optiplex-two` or any other Docker host on the LAN.
+
+Start by confirming you are on the right machine — this check comes first because the
+others give misleading results on the wrong one:
 
 🖥️
 
 ```bash
-# 1. The external `edge` network (created by the traefik stack)
-docker network inspect edge --format 'edge OK — driver {{.Driver}}'
+docker network inspect edge \
+  --format 'edge: {{.Driver}} | attached: {{range .Containers}}{{.Name}} {{end}}'
+```
 
-# 2. Traefik itself is running
+`traefik` **must** appear in the attached list:
+
+```text
+edge: bridge | attached: traefik adguardhome whoami ...
+```
+
+> [!CAUTION]
+> **`edge` existing is not proof you are on the right host.** It is a plain *local* bridge
+> — any Docker host can have a network with that name, and they are unrelated networks
+> that cannot reach each other. If `docker network inspect edge` succeeds but `traefik` is
+> absent from the attached list, you are on the wrong machine. Deploying there would come
+> up clean and then fail at [step 6](#step-6--wire-the-http-provider-into-traefik), because
+> Traefik cannot resolve `traefik-proxy-admin` across hosts.
+
+Then confirm the rest:
+
+🖥️
+
+```bash
+# Traefik is running here
 docker ps --filter name=^traefik$ --format '{{.Names}}  {{.Status}}'
 
-# 3. The BasicAuth usersfile Traefik already mounts
+# The BasicAuth usersfile Traefik already mounts
 sudo ls -l /opt/netlab-stack/traefik/auth/.htpasswd
 
-# 4. You can edit Traefik's static config
+# You can edit Traefik's static config
 sudo test -w /opt/netlab-stack/traefik/traefik.yml && echo "traefik.yml writable"
 ```
 
 Expected:
 
 ```text
-edge OK — driver bridge
 traefik  Up 3 days
 -rw-r----- 1 root root 92 Jul 12 21:04 /opt/netlab-stack/traefik/auth/.htpasswd
 traefik.yml writable
 ```
 
-If `edge` does not exist, deploy the [traefik](../traefik/) stack first — this stack
-declares that network `external` and will refuse to start without it.
+| Result | Meaning |
+| --- | --- |
+| `docker ps` prints nothing | No Traefik here — **wrong host**, `ssh` to the one above |
+| `/opt/netlab-stack/...: No such file or directory` | Wrong host, or the usersfile does not exist yet — [step 2](#step-2--create-a-basicauth-user) covers creating it |
+| `traefik.yml writable` missing | Wrong host, or you need `sudo` rights on the static config |
+| `edge` not found at all | Deploy the [traefik](../traefik/) stack first — this stack declares the network `external` and will not start without it |
 
 **Nothing else to prepare.** No host directories to create; all state lives in a named
 volume. No free host port is needed either — see the note in [step 4](#step-4--deploy-the-stack-in-portainer).
+
+> [!TIP]
+> **Must the panel run on a different host?** Then this design does not fit as written:
+> Traefik would have to poll it by `IP:port` over the LAN instead of by container name,
+> which means publishing a host port — and a published port bypasses both middlewares
+> guarding a panel that [has no login of its own](#security). If you need that, protect
+> the published port at the firewall and treat the
+> [debugging-port warning](#optional-direct-host-access-for-debugging) as permanent.
 
 ---
 
@@ -191,6 +231,42 @@ sudo htpasswd -B /opt/netlab-stack/traefik/auth/.htpasswd tpadmin
 > Use `-B` (bcrypt) **without** `-c`. The `-c` flag *creates a new file*, silently
 > truncating the existing one and locking you out of every other service that uses it —
 > including the Traefik dashboard. Only use `-c` if `ls` in step 1 showed no file at all.
+
+<details>
+<summary><strong>If step 1 reported no <code>.htpasswd</code> on the Traefik host</strong></summary>
+
+The traefik stack bind-mounts that exact path
+([docker_compose.yaml](../traefik/docker_compose.yaml)):
+
+```yaml
+- /opt/netlab-stack/traefik/auth/.htpasswd:/etc/traefik/.htpasswd:ro
+```
+
+When a bind-mount source does not exist, **Docker creates it as a directory**, and Traefik
+then reports an unreadable usersfile rather than anything about a missing file. Check
+which you have before creating a user:
+
+🖥️
+
+```bash
+sudo stat -c '%F  %n' /opt/netlab-stack/traefik/auth/.htpasswd
+```
+
+- `regular file` → normal case, use the `htpasswd -B` command above without `-c`.
+- `directory` → Docker invented it. Remove it, create a real file, and recreate the
+  Traefik container so it picks up the new inode:
+
+  ```bash
+  sudo rmdir /opt/netlab-stack/traefik/auth/.htpasswd
+  sudo htpasswd -cB /opt/netlab-stack/traefik/auth/.htpasswd tpadmin
+  sudo chmod 640 /opt/netlab-stack/traefik/auth/.htpasswd
+  docker compose -f /opt/netlab-stack/traefik/docker_compose.yaml up -d --force-recreate traefik
+  ```
+
+  `-c` is correct **only here**, where you have just confirmed no file exists.
+  A `docker restart` is not enough — the bind mount is resolved at container creation.
+
+</details>
 
 **Check** — the user should be listed, and Traefik re-reads the file on change, so no
 restart is needed:
@@ -953,7 +1029,9 @@ and nothing named `traefik-proxy-admin` should remain.
 | Symptom | Step | Likely cause |
 | --- | --- | --- |
 | 🔴 Traefik fails to start after the wiring edit | 6 | `endpoints:` (plural) instead of `endpoint:`. Traefik v3 rejects the unknown key. |
+| 🔴 `edge` exists but `traefik` is not attached to it | 1 | **Wrong host.** `edge` is a local bridge; a same-named network on another Docker host is unrelated. Deploy on the machine running Traefik. |
 | 🔴 Stack won't deploy: `network edge not found` | 1 | The traefik stack is not running. |
+| 🔴 Traefik logs an unreadable usersfile; `.htpasswd` is a directory | 2 | Bind-mount source did not exist, so Docker created a directory. See the collapsed note in step 2. |
 | 🔴 `tpadmin.shome` → connection refused / NXDOMAIN | 3 | No AdGuard DNS rewrite. |
 | 🔴 App crash-loops immediately, `EROFS` in logs | 4 | `read_only: true` with a write path not covered by the tmpfs mounts. Remove `read_only` and both `tmpfs` lines to confirm. |
 | 🟠 App healthy but every page errors | 4 | `DATABASE_URL` mangled by punctuation in the password. Check with `docker exec traefik-proxy-admin env \| grep DATABASE_URL`. |
