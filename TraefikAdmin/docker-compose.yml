@@ -1,0 +1,159 @@
+# Traefik Proxy Admin — web UI that feeds routes to your EXISTING Traefik over the
+# HTTP provider. It does not run, replace, or restart Traefik.
+#
+# Adapted from upstream docker.compose.example.yml:
+#   - no Traefik container here, nothing bound to :80/:443
+#   - joins the existing external `edge` network (upstream assumed a network named `traefik`)
+#   - middlewares renamed to the ones this repo actually defines — security-headers@file
+#     and compression@file — plus its own BasicAuth + IP-allowlist pair. Upstream's
+#     `security@file`, `base@file` and `auth-traefik@docker` (authentik) do not exist here.
+#   - Postgres pinned to an internal-only network, no published port, no route
+#
+# The app has NO built-in login. The middlewares below are the only thing standing
+# between the LAN and full CRUD over your routing table. See README.md -> Security.
+
+services:
+  traefik-proxy-admin:
+    image: ghcr.io/janhouse/traefik-proxy-admin:v0.2.2
+    container_name: traefik-proxy-admin
+    restart: unless-stopped
+
+    environment:
+      # DATABASE_URL is the only variable the app requires. Host must match the db
+      # service's container_name below. Password must be alphanumeric — see .env.example.
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@traefik-proxy-admin-db:5432/${POSTGRES_DB}"
+      DB_CONNECTION_LIMIT: "${DB_CONNECTION_LIMIT:-10}"
+      TZ: "${TZ:-UTC}"
+
+    networks:
+      - edge          # reachable by Traefik for routing + HTTP-provider polling
+      - tpadmin-back  # reaches Postgres; internal-only
+
+    depends_on:
+      traefik-proxy-admin-db:
+        condition: service_healthy
+
+    # No ports published. Ingress is via Traefik only. The container is still
+    # reachable on :3000 by anything else on `edge` — that is inherent to the
+    # shared network, see README.md -> Security.
+
+    labels:
+      - "traefik.enable=true"
+      # This container sits on two networks; tell Traefik which IP to route to.
+      - "traefik.docker.network=edge"
+
+      - "traefik.http.routers.tpadmin.rule=Host(`${TPADMIN_HOST}.${BASE_DOMAIN}`)"
+      - "traefik.http.routers.tpadmin.entrypoints=websecure"
+      - "traefik.http.routers.tpadmin.tls=true"
+      - "traefik.http.routers.tpadmin.tls.certresolver=${CERTRESOLVER}"
+      - "traefik.http.routers.tpadmin.service=tpadmin"
+      - "traefik.http.services.tpadmin.loadbalancer.server.port=3000"
+
+      # Order matters: reject off-subnet callers before spending a bcrypt compare.
+      - "traefik.http.routers.tpadmin.middlewares=tpadmin-ipallow@docker,tpadmin-auth@docker,security-headers@file,compression@file"
+
+      # Own middleware pair rather than borrowing traefik-auth@docker / traefik-ipallow@docker
+      # from the traefik stack — those vanish if that stack is redeployed, which would
+      # silently drop auth from this router.
+      - "traefik.http.middlewares.tpadmin-ipallow.ipallowlist.sourcerange=${TPADMIN_ALLOWLIST:-192.168.200.0/24,192.168.0.0/16}"
+      # usersfile path is resolved inside the TRAEFIK container, which already mounts
+      # /opt/netlab-stack/traefik/auth/.htpasswd there. Nothing to mount here.
+      - "traefik.http.middlewares.tpadmin-auth.basicauth.usersfile=/etc/traefik/.htpasswd"
+      - "traefik.http.middlewares.tpadmin-auth.basicauth.removeheader=true"
+
+    # Hardening. The image already runs as uid 1001 and needs no capabilities.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      # Next.js standalone writes its fetch/ISR cache here — the upstream Dockerfile
+      # creates and chowns this path explicitly. If the container ever crash-loops on
+      # a read-only filesystem, drop `read_only` and these two tmpfs lines first.
+      - /app/.next/cache:rw,noexec,nosuid,size=128m,mode=1777
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: "1.0"
+    pids_limit: 256
+    stop_grace_period: 20s
+
+    # The image ships its own HEALTHCHECK (wget --spider on /api/health, 10s interval),
+    # so none is declared here. Note it probes the HTTP listener only — it stays green
+    # if Postgres is unreachable.
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  traefik-proxy-admin-db:
+    image: postgres:16-alpine
+    container_name: traefik-proxy-admin-db
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      # Detects silent on-disk corruption. Only applied when the volume is first created.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+      TZ: "${TZ:-UTC}"
+
+    volumes:
+      - tpadmin_db_data:/var/lib/postgresql/data
+
+    networks:
+      - tpadmin-back  # not on `edge`; nothing outside this stack can reach it
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Minimum set for initdb to create and own the data directory.
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+
+    shm_size: 128mb
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: "1.0"
+    pids_limit: 128
+    # Give Postgres time to complete a clean shutdown rather than a crash recovery.
+    stop_grace_period: 60s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  tpadmin_db_data:
+
+networks:
+  # Created by the traefik stack. Declared external so this stack never owns or
+  # removes it — bringing this stack down must not touch the edge network.
+  edge:
+    external: true
+    name: edge
+
+  # App <-> Postgres only. internal:true removes the gateway, so the DB has no
+  # route off the host in either direction.
+  tpadmin-back:
+    driver: bridge
+    internal: true

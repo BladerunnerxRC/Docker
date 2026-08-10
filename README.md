@@ -21,6 +21,7 @@ Docker templates and misc self-hosted stack configs.
 | App | Description |
 | --- | --- |
 | [traefik](traefik/) | Edge reverse-proxy stack — Traefik with split dynamic config (transports, middlewares, routers, services), TLS via the `stepca` resolver, plus AdGuard Home DNS and a whoami test service on a shared `edge` network. |
+| [TraefikAdmin](TraefikAdmin/) | Web UI for building Traefik routes without editing YAML, backed by PostgreSQL. Sits beside the `traefik` stack and feeds it over the HTTP provider — it does not run or replace Traefik. |
 | [AdGuard](AdGuard/) | AdGuard Home network-wide DNS ad/tracker blocker, deployed on a dedicated macvlan interface for DHCP support. |
 | [step-ca](step-ca/) | Smallstep `step-ca` internal certificate authority for issuing LAN TLS certs — [Docker server install](step-ca/Docker_Server_Install/) and [NAS install](step-ca/NAS_Install/) variants. |
 

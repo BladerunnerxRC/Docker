@@ -1,0 +1,8 @@
+# Secrets — real values live here, never in git. See .env.example for the template.
+.env
+.env.*
+!.env.example
+
+# Local database dumps
+*.sql
+*.sql.gz
