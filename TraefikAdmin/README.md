@@ -360,17 +360,43 @@ nothing needs cloning and Portainer builds it in place — no change required:
 ```yaml
   traefik-proxy-admin:
     build:
-      context: https://github.com/Janhouse/traefik-proxy-admin.git#v0.2.2
-    image: traefik-proxy-admin:v0.2.2-local
+      context: https://github.com/Janhouse/traefik-proxy-admin.git#74f39a389a5a317abaa1522129533bda06acedaa
+    image: traefik-proxy-admin:main-74f39a38
 ```
 
 `image:` alongside `build:` **names the build output**, so redeploys reuse it instead of
 rebuilding every time.
 
+> [!CAUTION]
+> **Do not build the `v0.2.2` tag — it no longer builds.** Its Dockerfile (Dec 2025) runs
+> `npm install -g pnpm` *unpinned* and predates the repo's `pnpm-workspace.yaml`. Install
+> a fresh pnpm today and it refuses to run dependency build scripts it has not been told
+> to trust, failing the layer outright:
+>
+> ```text
+> [ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: @tailwindcss/oxide, esbuild, sharp, unrs-resolver
+> ERROR: process "/bin/sh -c npm install -g pnpm && pnpm i --frozen-lockfile" did not
+> complete successfully: exit code: 1
+> ```
+>
+> Confusingly the install itself *succeeds* — all 410 packages resolve — and only then
+> exits 1. Upstream hit this and fixed it on `main` (`6f734dfbb1` copies
+> `pnpm-workspace.yaml` into the deps stage, `dd910142b6` pins `pnpm@10`) but has not cut
+> a release since. Hence the commit pin above rather than a tag.
+
+Building from `main` is less adventurous than it sounds here. Upstream's own published
+`ghcr.io/janhouse/traefik-proxy-admin:latest` was built **2026-06-08** — six months after
+the last tag (2025-12-12) and after both fixes — so `main` is what they actually ship;
+the tag is simply stale. Pinning a full commit SHA keeps the build reproducible even as
+`main` moves on, and the tag can be adopted again the moment upstream cuts a release
+newer than `dd910142b6`.
+
 > [!TIP]
 > **On an amd64 host, prefer the published image** — drop the `build:` block and use
 > `image: ghcr.io/janhouse/traefik-proxy-admin:v0.2.2` instead. There is no reason to
-> compile what upstream already ships for your architecture.
+> compile what upstream already ships for your architecture, and the pre-built `v0.2.2`
+> image is unaffected by the build breakage above (it was built back when the tag still
+> worked).
 
 You can also build it once by hand and leave the compose file's `image:` pointing at the
 local tag:
@@ -378,8 +404,8 @@ local tag:
 🖥️
 
 ```bash
-docker build -t traefik-proxy-admin:v0.2.2-local \
-  https://github.com/Janhouse/traefik-proxy-admin.git#v0.2.2
+docker build -t traefik-proxy-admin:main-74f39a38 \
+  https://github.com/Janhouse/traefik-proxy-admin.git#74f39a389a5a317abaa1522129533bda06acedaa
 ```
 
 Both base images the Dockerfile pulls — `node:23-alpine` and `postgres:16-alpine` —
@@ -899,27 +925,38 @@ of a running Postgres is crash-consistent at best; prefer the dump.
 **Upgrading the app.** Migrations run automatically on boot, so an upgrade is a version
 bump plus a redeploy. Take a dump first — the migrations are one-way.
 
-This stack **builds from source** ([why](#non-amd64-hosts)), so upgrading means bumping the
-git ref *and* the local tag in [docker-compose.yml](docker-compose.yml), then rebuilding:
+This stack **builds from a pinned upstream commit** ([why](#non-amd64-hosts)), so upgrading
+means bumping the SHA *and* the local tag in [docker-compose.yml](docker-compose.yml), then
+rebuilding. Pick the new commit deliberately rather than tracking `main`:
+
+```bash
+# What has landed upstream since the current pin
+gh api "repos/Janhouse/traefik-proxy-admin/commits?sha=main&per_page=10" \
+  --jq '.[] | .sha[0:12] + "  " + (.commit.message | split("\n")[0])'
+```
 
 ```yaml
     build:
-      context: https://github.com/Janhouse/traefik-proxy-admin.git#v0.2.3
-    image: traefik-proxy-admin:v0.2.3-local
+      context: https://github.com/Janhouse/traefik-proxy-admin.git#<new-full-sha>
+    image: traefik-proxy-admin:main-<new-short-sha>
 ```
 
 ```bash
-docker compose build --pull traefik-proxy-admin && docker compose up -d
+docker compose build traefik-proxy-admin && docker compose up -d
 ```
 
 > [!IMPORTANT]
 > **Portainer's "Pull and redeploy" does nothing here.** There is no registry behind
-> `traefik-proxy-admin:v0.2.2-local`, so the pull is a no-op and the old image keeps
+> `traefik-proxy-admin:main-74f39a38`, so the pull is a no-op and the old image keeps
 > running. An upgrade that reports success while changing nothing is expected, not a
 > fault — use *Update the stack* with **re-pull/rebuild** enabled, or the CLI above.
 >
-> Bump the `image:` tag along with the git ref. Reusing the same local tag makes Compose
-> reuse the cached image and skip the rebuild entirely.
+> Bump the `image:` tag along with the SHA. Reusing the same local tag lets Compose reuse
+> the cached image and skip the rebuild entirely — the same silent no-op by another route.
+
+**Switch back to a tag once upstream cuts a release** newer than `dd910142b6` (May 2026),
+which is the commit that made the Dockerfile buildable again. Until then a tag pin
+reintroduces the [pnpm build failure](#non-amd64-hosts).
 
 Upstream tags: `v0.2`, `v0.2.1`, `v0.2.2`, `latest` — **all `linux/amd64` only**. On an
 amd64 host you would instead pin the published image, currently:
@@ -1155,7 +1192,7 @@ deleting the stack:
 | --- | --- | --- |
 | DNS rewrite `tpadmin.shome` | [Step 3](#step-3--add-the-dns-record) | AdGuard Home → Filters → DNS rewrites → delete |
 | BasicAuth user `tpadmin` | [Step 2](#step-2--create-a-basicauth-user) | `sudo htpasswd -D /opt/netlab-stack/traefik/auth/.htpasswd tpadmin` |
-| Container images | [Step 4](#step-4--deploy-the-stack-in-portainer) | `docker rmi traefik-proxy-admin:v0.2.2-local postgres:16-alpine` |
+| Container images | [Step 4](#step-4--deploy-the-stack-in-portainer) | `docker rmi traefik-proxy-admin:main-74f39a38 postgres:16-alpine` |
 | Build cache from the source build | [Step 4](#step-4--deploy-the-stack-in-portainer) | `docker builder prune` — the Next.js build leaves several GB behind |
 
 > [!CAUTION]
@@ -1194,6 +1231,7 @@ and nothing named `traefik-proxy-admin` should remain.
 | 🔴 Crash-loop: `exec ./entrypoint.sh: exec format error` | 4 | Host is not amd64 and the image has no arm64 build. See [Non-amd64 hosts](#non-amd64-hosts). Nothing about the message says "architecture" — check `docker version --format '{{.Server.Arch}}'`. |
 | 🔴 App crash-loops immediately, `EROFS` in logs | 4 | `read_only: true` with a write path not covered by the tmpfs mounts. Remove `read_only` and both `tmpfs` lines to confirm. |
 | 🔴 Build fails at `pnpm build`, exit code 137 | 4 | OOM during `next build` on a small host. Add swap or build elsewhere. |
+| 🔴 Build fails with `ERR_PNPM_IGNORED_BUILDS` | 4 | Building the `v0.2.2` tag, whose Dockerfile installs pnpm unpinned. Build the pinned commit instead — see [Non-amd64 hosts](#non-amd64-hosts). |
 | 🟠 App healthy but every page errors | 4 | `DATABASE_URL` mangled by punctuation in the password. Check with `docker exec traefik-proxy-admin env \| grep DATABASE_URL`. |
 | 🟠 `getaddrinfo ENOTFOUND` naming part of your password | 4 | An `@` in `POSTGRES_PASSWORD` split the URL. Use alphanumerics. |
 | 🟠 `\dt` returns no tables | 5 | Migrations failed — almost always the password above. |

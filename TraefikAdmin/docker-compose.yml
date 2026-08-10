@@ -19,13 +19,19 @@ services:
     # succeed and the container then restart-loop on
     # "exec ./entrypoint.sh: exec format error".
     #
-    # `image:` here NAMES the build output so redeploys reuse it instead of rebuilding.
+    # Pinned to a main COMMIT, not the v0.2.2 tag. The v0.2.2 Dockerfile (Dec 2025) runs
+    # `npm install -g pnpm` unpinned and predates pnpm-workspace.yaml, so building it
+    # today installs a pnpm that hard-fails on unapproved build scripts:
+    #   ERR_PNPM_IGNORED_BUILDS: esbuild, sharp, unrs-resolver, @tailwindcss/oxide
+    # Upstream fixed this on main (6f734dfbb1, dd910142b6) but never cut a new tag.
+    # Their own :latest is likewise built from main. See README.md -> Non-amd64 hosts.
+    #
+    # `image:` NAMES the build output so redeploys reuse it instead of rebuilding.
     # On an amd64 host, drop the build block and use the published image instead:
     #   image: ghcr.io/janhouse/traefik-proxy-admin:v0.2.2
-    # See README.md -> Non-amd64 hosts.
     build:
-      context: https://github.com/Janhouse/traefik-proxy-admin.git#v0.2.2
-    image: traefik-proxy-admin:v0.2.2-local
+      context: https://github.com/Janhouse/traefik-proxy-admin.git#74f39a389a5a317abaa1522129533bda06acedaa
+    image: traefik-proxy-admin:main-74f39a38
     container_name: traefik-proxy-admin
     restart: unless-stopped
 
