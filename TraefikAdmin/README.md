@@ -135,19 +135,30 @@ Nine steps, in order. Steps 1–5 stand the stack up; **step 6 is the one that m
 actually work** and is the easiest to skip. Each step ends with a check — if the check
 fails, stop there rather than continuing.
 
-Commands marked 🖥️ run on the Docker host (smiddleware). Everything else is a browser.
+Commands marked 🖥️ run on the Traefik host — **smiddleware, `192.168.200.52`**
+([why it must be that one](#step-1--preflight)). Everything else is a browser.
 
 ---
 
 ### Step 1 — Preflight
 
 > [!IMPORTANT]
-> **Every 🖥️ command in this guide runs on the host where Traefik itself runs** — the
-> machine [traefik/README.md](../traefik/README.md#runtime-layout-smiddleware) calls
-> *smiddleware*, which is `192.168.200.98` in
-> [30-services.yml](../traefik/dynamic/30-services.yml). This stack reaches Traefik over a
-> **local** Docker bridge, so the two must share a host. It will not work from
-> `optiplex-two` or any other Docker host on the LAN.
+> **Every 🖥️ command in this guide runs on `smiddleware` — `192.168.200.52`.** That is
+> the host running Traefik ([traefik/README.md](../traefik/README.md#runtime-layout-smiddleware)).
+> This stack reaches Traefik over a **local** Docker bridge, so the two must share a host.
+> It will not work from any other Docker host on the LAN.
+
+| Host | IP | Role |
+| --- | --- | --- |
+| **smiddleware** | **192.168.200.52** | Runs Traefik. **Deploy this stack here.** |
+| optiplex | 192.168.200.98 | App backends Traefik proxies *to* — not here |
+| optiplex-two | 192.168.200.14 | Another Docker host — not here |
+
+> [!WARNING]
+> Do not infer the Traefik host from [30-services.yml](../traefik/dynamic/30-services.yml).
+> Most URLs there point at `192.168.200.98`, but those are **backends Traefik forwards
+> to**, not Traefik itself. The entry that identifies the proxy host is `webmin-mid` →
+> `192.168.200.52`.
 
 Start by confirming you are on the right machine — this check comes first because the
 others give misleading results on the wrong one:
@@ -285,9 +296,18 @@ In **AdGuard Home** ([AdGuard](../AdGuard/), `https://dns.shome`):
 
 1. **Filters → DNS rewrites → Add DNS rewrite**
 2. **Domain:** `tpadmin.shome`
-3. **Answer:** the IP of the Traefik host — the same address your other `*.shome` names
-   resolve to (`192.168.200.98` in [30-services.yml](../traefik/dynamic/30-services.yml))
+3. **Answer:** `192.168.200.52` — the **Traefik host**, same as every other `*.shome` name
 4. **Save**
+
+> [!CAUTION]
+> **Point DNS at Traefik, never at the backend.** Every `*.shome` name resolves to
+> `192.168.200.52`; Traefik terminates TLS there and forwards to the real service. The
+> addresses in [30-services.yml](../traefik/dynamic/30-services.yml) — mostly
+> `192.168.200.98` — are those forward targets and must never appear in a DNS rewrite.
+> Pointing `tpadmin.shome` at `192.168.200.98` skips the proxy entirely: nothing is
+> listening there for this host, so you get a connection refused or a TLS error that
+> looks like a certificate problem. This stack publishes no host port, so there is
+> nothing to reach directly even if you tried.
 
 **Check** — from any LAN client:
 
@@ -295,7 +315,7 @@ In **AdGuard Home** ([AdGuard](../AdGuard/), `https://dns.shome`):
 nslookup tpadmin.shome
 ```
 
-It must return the Traefik host's IP. A `NXDOMAIN` here becomes a confusing
+It must return `192.168.200.52`. A `NXDOMAIN` here becomes a confusing
 "connection refused" later.
 
 ---
