@@ -353,19 +353,52 @@ produces a real arm64 image, and leaves everything else in the stack unchanged.
 <details open>
 <summary><strong>Option A — build natively for your architecture (recommended)</strong></summary>
 
-**This is what [docker-compose.yml](docker-compose.yml) already ships**, because the
-Traefik host here is a Raspberry Pi 5. Compose accepts a Git URL as build context, so
-nothing needs cloning and Portainer builds it in place — no change required:
+The Traefik host here is a Raspberry Pi 5, so
+[docker-compose.yml](docker-compose.yml) references a **locally built image**:
 
 ```yaml
   traefik-proxy-admin:
-    build:
-      context: https://github.com/Janhouse/traefik-proxy-admin.git#74f39a389a5a317abaa1522129533bda06acedaa
     image: traefik-proxy-admin:main-74f39a38
 ```
 
-`image:` alongside `build:` **names the build output**, so redeploys reuse it instead of
-rebuilding every time.
+Build it **before** deploying the stack, or step 4 fails with `image not found`:
+
+🖥️
+
+```bash
+git clone https://github.com/Janhouse/traefik-proxy-admin.git /opt/build/traefik-proxy-admin
+cd /opt/build/traefik-proxy-admin
+git checkout 74f39a389a5a317abaa1522129533bda06acedaa
+docker build -t traefik-proxy-admin:main-74f39a38 .
+```
+
+> [!CAUTION]
+> **It must be a real clone — a `build.context` pointing at a git URL cannot work.**
+> `next.config.ts` derives the Next.js build ID by shelling out to git, with no fallback
+> if that fails:
+>
+> ```js
+> generateBuildId: async () =>
+>   execSync(`git describe --exact-match --tags 2> /dev/null || git rev-parse --short HEAD`)
+> ```
+>
+> BuildKit exports a git-URL context as a plain tree **without `.git`**, so both commands
+> fail and the build dies partway through `pnpm build`:
+>
+> ```text
+> fatal: not a git repository (or any of the parent directories): .git
+> Error: Command failed: git describe --exact-match --tags ...
+>     at generateBuildId (next.config.compiled.js:16:44)
+> ```
+>
+> Upstream's CI never hits this because `actions/checkout` produces a real repository —
+> and the project's `.dockerignore` deliberately does *not* exclude `.git`, so `COPY . .`
+> carries it into the build. A local clone reproduces those conditions; a git-URL context
+> cannot.
+
+The checkout is detached at a commit with no tag, so `git describe` falls through to
+`git rev-parse --short HEAD` and the build ID becomes that short SHA — which is why the
+image is tagged to match.
 
 > [!CAUTION]
 > **Do not build the `v0.2.2` tag — it no longer builds.** Its Dockerfile (Dec 2025) runs
@@ -392,33 +425,20 @@ the tag is simply stale. Pinning a full commit SHA keeps the build reproducible 
 newer than `dd910142b6`.
 
 > [!TIP]
-> **On an amd64 host, prefer the published image** — drop the `build:` block and use
-> `image: ghcr.io/janhouse/traefik-proxy-admin:v0.2.2` instead. There is no reason to
-> compile what upstream already ships for your architecture, and the pre-built `v0.2.2`
-> image is unaffected by the build breakage above (it was built back when the tag still
-> worked).
-
-You can also build it once by hand and leave the compose file's `image:` pointing at the
-local tag:
-
-🖥️
-
-```bash
-docker build -t traefik-proxy-admin:main-74f39a38 \
-  https://github.com/Janhouse/traefik-proxy-admin.git#74f39a389a5a317abaa1522129533bda06acedaa
-```
+> **On an amd64 host, none of this applies** — use
+> `image: ghcr.io/janhouse/traefik-proxy-admin:v0.2.2` and skip the build entirely. There
+> is no reason to compile what upstream already ships for your architecture, and the
+> pre-built `v0.2.2` image is unaffected by the breakage above: it was published back when
+> the tag still built.
 
 Both base images the Dockerfile pulls — `node:23-alpine` and `postgres:16-alpine` —
 publish `linux/arm64/v8`, so the build resolves without substitutions.
 
 > [!NOTE]
 > **On a Raspberry Pi 5 (8 GB) this builds fine — expect roughly 10–25 minutes.**
-> `pnpm install --frozen-lockfile` and `pnpm build` are the slow phases and emit nothing
-> for long stretches; that is normal, not a hang. To watch it work:
->
-> ```bash
-> docker compose build --progress=plain traefik-proxy-admin
-> ```
+> `pnpm i --frozen-lockfile` and `pnpm build` are the slow phases and emit nothing for
+> long stretches; that is normal, not a hang. To watch it work, add `--progress=plain`
+> to the `docker build` command.
 >
 > Memory is what bites smaller boards. `next build` wants ~2 GB, and an OOM kill surfaces
 > as `pnpm build` exiting **137**. With 8 GB there is ample headroom and no swap is
@@ -925,25 +945,26 @@ of a running Postgres is crash-consistent at best; prefer the dump.
 **Upgrading the app.** Migrations run automatically on boot, so an upgrade is a version
 bump plus a redeploy. Take a dump first — the migrations are one-way.
 
-This stack **builds from a pinned upstream commit** ([why](#non-amd64-hosts)), so upgrading
-means bumping the SHA *and* the local tag in [docker-compose.yml](docker-compose.yml), then
-rebuilding. Pick the new commit deliberately rather than tracking `main`:
+This stack runs a **locally built image pinned to an upstream commit**
+([why](#non-amd64-hosts)), so upgrading is: review what landed, rebuild, repoint the tag.
+Pick the new commit deliberately rather than tracking `main` blindly.
+
+🖥️
 
 ```bash
-# What has landed upstream since the current pin
-gh api "repos/Janhouse/traefik-proxy-admin/commits?sha=main&per_page=10" \
-  --jq '.[] | .sha[0:12] + "  " + (.commit.message | split("\n")[0])'
+cd /opt/build/traefik-proxy-admin
+git fetch origin main
+
+# What has landed since the running pin
+git log --oneline HEAD..origin/main
+
+# Build the chosen commit — keep the clone, the build needs its .git
+git checkout <new-sha>
+docker build -t traefik-proxy-admin:main-<new-short-sha> .
 ```
 
-```yaml
-    build:
-      context: https://github.com/Janhouse/traefik-proxy-admin.git#<new-full-sha>
-    image: traefik-proxy-admin:main-<new-short-sha>
-```
-
-```bash
-docker compose build traefik-proxy-admin && docker compose up -d
-```
+Then update `image:` in [docker-compose.yml](docker-compose.yml) to the new tag and
+redeploy the stack.
 
 > [!IMPORTANT]
 > **Portainer's "Pull and redeploy" does nothing here.** There is no registry behind
@@ -1232,6 +1253,8 @@ and nothing named `traefik-proxy-admin` should remain.
 | 🔴 App crash-loops immediately, `EROFS` in logs | 4 | `read_only: true` with a write path not covered by the tmpfs mounts. Remove `read_only` and both `tmpfs` lines to confirm. |
 | 🔴 Build fails at `pnpm build`, exit code 137 | 4 | OOM during `next build` on a small host. Add swap or build elsewhere. |
 | 🔴 Build fails with `ERR_PNPM_IGNORED_BUILDS` | 4 | Building the `v0.2.2` tag, whose Dockerfile installs pnpm unpinned. Build the pinned commit instead — see [Non-amd64 hosts](#non-amd64-hosts). |
+| 🔴 Build fails at `pnpm build`: `fatal: not a git repository` | 4 | Built from a git-URL context, which has no `.git`. `next.config.ts` needs one. Clone locally and build from that directory. |
+| 🔴 Stack fails to start: `image not found` | 4 | The image was never built. It is local-only — there is no registry to pull it from. |
 | 🟠 App healthy but every page errors | 4 | `DATABASE_URL` mangled by punctuation in the password. Check with `docker exec traefik-proxy-admin env \| grep DATABASE_URL`. |
 | 🟠 `getaddrinfo ENOTFOUND` naming part of your password | 4 | An `@` in `POSTGRES_PASSWORD` split the URL. Use alphanumerics. |
 | 🟠 `\dt` returns no tables | 5 | Migrations failed — almost always the password above. |
