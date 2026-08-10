@@ -138,6 +138,17 @@ would fail at `docker compose up`. Every deviation:
 
 No host directories to pre-create. All state lives in the `tpadmin_db_data` named volume.
 
+> [!NOTE]
+> **No free host port required.** This stack publishes nothing. The `3000` in the compose
+> file is the container's own listener, reached by Traefik over `edge` at
+> `traefik-proxy-admin:3000` — a different address from `0.0.0.0:3000` on the host, which
+> [AdGuard Home already owns](../traefik/docker_compose.yaml). The two cannot collide.
+>
+> Do **not** try to move the app off 3000 with the `PORT` variable to "free it up": the
+> image's built-in `HEALTHCHECK` hardcodes `http://localhost:3000/api/health`, so the
+> container would go permanently unhealthy while working fine. If you want direct host
+> access for debugging, map a spare host port instead — see below.
+
 ---
 
 ## Environment variables
@@ -195,6 +206,21 @@ authenticate with your `.htpasswd` credentials.
 > [!IMPORTANT]
 > The panel is reachable now, but **no route it creates will work yet.** Traefik does
 > not know the panel exists until you complete the next section.
+
+### Optional: a host port for debugging
+
+Nothing in normal operation needs this. It also **bypasses every access control on this
+stack** — no IP allowlist, no BasicAuth, and the app has no login of its own — so a
+published port hands full routing-table CRUD to anything that can reach the host.
+
+If you need it temporarily, map a free host port (3000 is AdGuard's) and remove it when
+you are done:
+
+```yaml
+    # under the traefik-proxy-admin service
+    ports:
+      - "3010:3000"   # host 3010 -> container 3000
+```
 
 ---
 

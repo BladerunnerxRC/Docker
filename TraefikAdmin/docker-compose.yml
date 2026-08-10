@@ -33,9 +33,15 @@ services:
       traefik-proxy-admin-db:
         condition: service_healthy
 
-    # No ports published. Ingress is via Traefik only. The container is still
-    # reachable on :3000 by anything else on `edge` — that is inherent to the
-    # shared network, see README.md -> Security.
+    # No ports published — ingress is via Traefik only.
+    #
+    # The 3000 below is the CONTAINER's listener, not a host port. It does not
+    # conflict with AdGuard Home, which already owns host :3000 in the traefik
+    # stack: Traefik dials this container's `edge` IP on 3000, a different address
+    # from 0.0.0.0:3000 on the host. Nothing here needs a free host port.
+    #
+    # The container IS reachable on :3000 by anything else on `edge` — inherent to
+    # the shared network, see README.md -> Security.
 
     labels:
       - "traefik.enable=true"
