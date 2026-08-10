@@ -366,11 +366,21 @@ Build it **before** deploying the stack, or step 4 fails with `image not found`:
 🖥️
 
 ```bash
+# /opt is root-owned; own the build dir so later fetch/checkout need no sudo
+sudo mkdir -p /opt/build
+sudo chown "$USER:$USER" /opt/build
+
 git clone https://github.com/Janhouse/traefik-proxy-admin.git /opt/build/traefik-proxy-admin
 cd /opt/build/traefik-proxy-admin
 git checkout 74f39a389a5a317abaa1522129533bda06acedaa
 docker build -t traefik-proxy-admin:main-74f39a38 .
 ```
+
+Chown the parent rather than reaching for `sudo git clone` — a root-owned tree makes every
+later `git fetch` need `sudo` as well, and git then refuses to touch it as your own user
+with `detected dubious ownership`. Any writable path works if you prefer;
+`~/src/traefik-proxy-admin` avoids `sudo` entirely, while `/opt/build` matches the `/opt`
+layout the rest of this host already uses.
 
 > [!CAUTION]
 > **It must be a real clone — a `build.context` pointing at a git URL cannot work.**
