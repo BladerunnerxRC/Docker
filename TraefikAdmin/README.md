@@ -192,6 +192,9 @@ Then confirm the rest:
 # Traefik is running here
 docker ps --filter name=^traefik$ --format '{{.Names}}  {{.Status}}'
 
+# Host CPU architecture — the upstream image ships amd64 only
+docker version --format 'server arch: {{.Server.Arch}}'
+
 # The BasicAuth usersfile Traefik already mounts
 sudo ls -l /opt/netlab-stack/traefik/auth/.htpasswd
 
@@ -203,6 +206,7 @@ Expected:
 
 ```text
 traefik  Up 3 days
+server arch: amd64
 -rw-r----- 1 root root 92 Jul 12 21:04 /opt/netlab-stack/traefik/auth/.htpasswd
 traefik.yml writable
 ```
@@ -210,9 +214,19 @@ traefik.yml writable
 | Result | Meaning |
 | --- | --- |
 | `docker ps` prints nothing | No Traefik here — **wrong host**, `ssh` to the one above |
+| `server arch` is **not** `amd64` | The published image will not run — see [Non-amd64 hosts](#non-amd64-hosts) before step 4 |
 | `/opt/netlab-stack/...: No such file or directory` | Wrong host, or the usersfile does not exist yet — [step 2](#step-2--create-a-basicauth-user) covers creating it |
 | `traefik.yml writable` missing | Wrong host, or you need `sudo` rights on the static config |
 | `edge` not found at all | Deploy the [traefik](../traefik/) stack first — this stack declares the network `external` and will not start without it |
+
+> [!CAUTION]
+> **`ghcr.io/janhouse/traefik-proxy-admin` is published for `linux/amd64` only**, and with
+> *no manifest list*. That combination is unusually nasty: Docker has no index to reject
+> your platform against, so the pull **succeeds** on any architecture and the failure is
+> deferred to runtime, where it appears as a restart loop with
+> `exec ./entrypoint.sh: exec format error` and no mention of architecture at all.
+> Verified for `v0.2`, `v0.2.1`, `v0.2.2` and `latest`. See
+> [Non-amd64 hosts](#non-amd64-hosts).
 
 **Nothing else to prepare.** No host directories to create; all state lives in a named
 volume. No free host port is needed either — see the note in [step 4](#step-4--deploy-the-stack-in-portainer).
@@ -321,6 +335,97 @@ It must return `192.168.200.52`. A `NXDOMAIN` here becomes a confusing
 ---
 
 ### Step 4 — Deploy the stack in Portainer
+
+#### Non-amd64 hosts
+
+Skip this if step 1 reported `server arch: amd64`.
+
+Upstream publishes **`linux/amd64` only** — no arm64, no manifest list, for every tag.
+On an arm64 host the pull succeeds and the container then restart-loops with:
+
+```text
+exec ./entrypoint.sh: exec format error
+```
+
+Two ways forward. **Building natively is the better one** — it is a stock Next.js build,
+produces a real arm64 image, and leaves everything else in the stack unchanged.
+
+<details open>
+<summary><strong>Option A — build natively for your architecture (recommended)</strong></summary>
+
+Swap the `image:` line in [docker-compose.yml](docker-compose.yml) for a build from the
+upstream git tag. Compose accepts a Git URL as build context, so nothing needs cloning and
+Portainer handles it in-place:
+
+```yaml
+  traefik-proxy-admin:
+    # image: ghcr.io/janhouse/traefik-proxy-admin:v0.2.2
+    build:
+      context: https://github.com/Janhouse/traefik-proxy-admin.git#v0.2.2
+    image: traefik-proxy-admin:v0.2.2-local
+```
+
+Keeping `image:` alongside `build:` names the result, so redeploys reuse it instead of
+rebuilding. Or build it once by hand and leave the compose file's `image:` pointing at the
+local tag:
+
+🖥️
+
+```bash
+docker build -t traefik-proxy-admin:v0.2.2-local \
+  https://github.com/Janhouse/traefik-proxy-admin.git#v0.2.2
+```
+
+Both base images the Dockerfile pulls — `node:23-alpine` and `postgres:16-alpine` —
+publish `linux/arm64/v8`, so the build resolves without substitutions.
+
+> [!NOTE]
+> **On a Raspberry Pi 5 (8 GB) this builds fine — expect roughly 10–25 minutes.**
+> `pnpm install --frozen-lockfile` and `pnpm build` are the slow phases and emit nothing
+> for long stretches; that is normal, not a hang. To watch it work:
+>
+> ```bash
+> docker compose build --progress=plain traefik-proxy-admin
+> ```
+>
+> Memory is what bites smaller boards. `next build` wants ~2 GB, and an OOM kill surfaces
+> as `pnpm build` exiting **137**. With 8 GB there is ample headroom and no swap is
+> needed; a 4 GB board is marginal, and 2 GB needs swap or an offboard build
+> (`docker save` / `docker load` the image across).
+>
+> It is also disk- and heat-intensive — several GB of transient layers, and a sustained
+> four-core compile. Prefer SSD/NVMe over microSD, and expect the SoC to warm up.
+
+Upgrades then mean rebuilding with a new tag rather than pulling — see
+[Maintenance](#maintenance--upgrades).
+
+</details>
+
+<details>
+<summary><strong>Option B — run the amd64 image under emulation (fast, slower at runtime)</strong></summary>
+
+Register qemu binfmt handlers on the host, then pin the platform:
+
+🖥️
+
+```bash
+docker run --privileged --rm tonistiigi/binfmt --install amd64
+```
+
+```yaml
+  traefik-proxy-admin:
+    image: ghcr.io/janhouse/traefik-proxy-admin:v0.2.2
+    platform: linux/amd64
+```
+
+Workable for a low-traffic admin panel, with caveats: every request runs through
+instruction translation, so page loads are noticeably slower; and the binfmt registration
+does not survive a reboot unless your distro ships `qemu-user-static` as a persistent
+service. If the panel starts timing out after a host restart, re-run the binfmt command.
+
+</details>
+
+---
 
 1. **Stacks → + Add stack**
 2. **Name:** `traefikadmin`
@@ -793,8 +898,20 @@ ghcr.io/janhouse/traefik-proxy-admin:v0.2.2
 sha256:7a86202ab3855f09ef5a8b97350306917114efaba7c3dc04b6eb13fdddea9496
 ```
 
-Published tags: `v0.2`, `v0.2.1`, `v0.2.2`, `latest`. Take a dump before upgrading — the
-migrations are one-way.
+Published tags: `v0.2`, `v0.2.1`, `v0.2.2`, `latest` — **all `linux/amd64` only**. Take a
+dump before upgrading; the migrations are one-way.
+
+If you took [Option A](#non-amd64-hosts) and build locally, upgrading means bumping the
+git ref and rebuilding rather than pulling:
+
+```bash
+docker build -t traefik-proxy-admin:v0.2.3-local \
+  https://github.com/Janhouse/traefik-proxy-admin.git#v0.2.3
+```
+
+then point `image:` at the new local tag and redeploy. Portainer's "Pull and redeploy"
+does nothing for a locally built image — it has no registry to pull from — so an upgrade
+that appears to succeed while changing nothing is expected here, not a fault.
 
 **Rotating the database password.** The `POSTGRES_*` variables are only read when the
 data volume is first created. Changing them later updates the app's `DATABASE_URL`
@@ -1053,7 +1170,9 @@ and nothing named `traefik-proxy-admin` should remain.
 | 🔴 Stack won't deploy: `network edge not found` | 1 | The traefik stack is not running. |
 | 🔴 Traefik logs an unreadable usersfile; `.htpasswd` is a directory | 2 | Bind-mount source did not exist, so Docker created a directory. See the collapsed note in step 2. |
 | 🔴 `tpadmin.shome` → connection refused / NXDOMAIN | 3 | No AdGuard DNS rewrite. |
+| 🔴 Crash-loop: `exec ./entrypoint.sh: exec format error` | 4 | Host is not amd64 and the image has no arm64 build. See [Non-amd64 hosts](#non-amd64-hosts). Nothing about the message says "architecture" — check `docker version --format '{{.Server.Arch}}'`. |
 | 🔴 App crash-loops immediately, `EROFS` in logs | 4 | `read_only: true` with a write path not covered by the tmpfs mounts. Remove `read_only` and both `tmpfs` lines to confirm. |
+| 🔴 Build fails at `pnpm build`, exit code 137 | 4 | OOM during `next build` on a small host. Add swap or build elsewhere. |
 | 🟠 App healthy but every page errors | 4 | `DATABASE_URL` mangled by punctuation in the password. Check with `docker exec traefik-proxy-admin env \| grep DATABASE_URL`. |
 | 🟠 `getaddrinfo ENOTFOUND` naming part of your password | 4 | An `@` in `POSTGRES_PASSWORD` split the URL. Use alphanumerics. |
 | 🟠 `\dt` returns no tables | 5 | Migrations failed — almost always the password above. |

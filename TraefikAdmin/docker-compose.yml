@@ -14,7 +14,14 @@
 
 services:
   traefik-proxy-admin:
+    # AMD64 ONLY. Upstream publishes no arm64 build and no manifest list, so on an
+    # arm64 host the pull SUCCEEDS and the container then restart-loops with
+    # "exec ./entrypoint.sh: exec format error". On arm64, comment out the image line
+    # and uncomment the build block — see README.md -> Non-amd64 hosts.
     image: ghcr.io/janhouse/traefik-proxy-admin:v0.2.2
+    # build:
+    #   context: https://github.com/Janhouse/traefik-proxy-admin.git#v0.2.2
+    # image: traefik-proxy-admin:v0.2.2-local
     container_name: traefik-proxy-admin
     restart: unless-stopped
 
