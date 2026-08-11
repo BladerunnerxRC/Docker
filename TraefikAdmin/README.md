@@ -102,6 +102,20 @@ route created in the panel — and the panel cannot overwrite a hand-written YAM
 That separation is the main reason this stack uses the HTTP provider rather than
 writing files into the watched directory.
 
+> [!IMPORTANT]
+> **The panel will not show your existing routes, and never will.** It is a route
+> *generator*, not a console for Traefik. It stores its own services in Postgres, emits
+> them at `/api/traefik/config`, and has no read path into Traefik's API — so it starts
+> empty and only ever lists what you create in it. Your `komga`, `haos`, `portainer` and
+> `webmin-*` routes belong to the file and Docker providers, which it cannot see.
+>
+> For the complete picture across all three providers, use the **Traefik dashboard** at
+> `https://traefik.shome/dashboard/`. The `@file` / `@docker` / `@http` suffix on each
+> router tells you which source owns it — and only `@http` entries are editable here.
+>
+> Upstream's name oversells it: the project exists to publish new routes for internal
+> services (originally through Headscale), not to administer an existing Traefik.
+
 ---
 
 ## What changed vs. upstream
