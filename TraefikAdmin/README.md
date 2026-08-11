@@ -565,15 +565,15 @@ docker logs traefik-proxy-admin 2>&1 | head -20
 ```
 
 ```text
-Traefik Configurator version: <build id>
-Running database migrations
-   ▲ Next.js 15.x
+Traefik Configurator version: 74f39a3
+   ▲ Next.js 16.x
    - Local:  http://0.0.0.0:3000
+Running database migrations
 ```
 
-**Check the migrations actually landed** — this is the step that catches a mangled
-password, because the app's health check only probes the HTTP listener and stays green
-even when the database is unreachable:
+**Check the migrations actually landed.** Do not skip this on the strength of a green
+health check — the image's healthcheck probes the HTTP listener only, so the app reports
+**healthy while completely unable to reach Postgres**:
 
 🖥️
 
@@ -581,9 +581,64 @@ even when the database is unreachable:
 docker exec traefik-proxy-admin-db psql -U tpadmin -d traefik_admin -c '\dt'
 ```
 
-You should see the app's tables (`services`, `domains`, `app_config`, …). An empty
-result means migrations failed — check `docker logs traefik-proxy-admin` for
-`Running migrations failed`.
+Eight tables should be listed, all owned by your `POSTGRES_USER`:
+
+```text
+ public | app_config               | table | tpadmin
+ public | basic_auth_configs       | table | tpadmin
+ public | basic_auth_users         | table | tpadmin
+ public | domains                  | table | tpadmin
+ public | service_security_configs | table | tpadmin
+ public | services                 | table | tpadmin
+ public | sessions                 | table | tpadmin
+ public | shared_links             | table | tpadmin
+```
+
+An empty result means migrations failed. The app logs it and carries on rather than
+exiting, so look for it explicitly:
+
+```text
+Running migrations failed, please do it manually - Error: Failed query: CREATE SCHEMA IF NOT EXISTS "drizzle"
+Error fetching global config: ... from "app_config"
+```
+
+Failing on `CREATE SCHEMA` — the very first statement — means the connection or the
+credentials are wrong, not the schema. Postgres names the real reason:
+
+```bash
+docker logs traefik-proxy-admin-db 2>&1 | tail -30
+```
+
+`FATAL: password authentication failed for user "tpadmin"` points at one of two causes:
+the password was [mangled inside the URL](#environment-variables), or the volume is
+stale.
+
+#### Stale database volume
+
+**Any earlier deploy that failed still initialized the database.** If a first attempt
+died for an unrelated reason — wrong architecture, missing image, a bad label — Postgres
+itself came up fine and ran `initdb`, permanently baking in whatever `POSTGRES_PASSWORD`
+was set at that moment. Postgres reads those `POSTGRES_*` variables **only at first
+init**, so every later change updates the app's `DATABASE_URL` and never the server. The
+two then disagree.
+
+Nothing catches this for you: `depends_on: service_healthy` is satisfied because
+`pg_isready` reports a server *accepting connections* — it never authenticates. So the
+database is healthy, the app is healthy, and every query fails.
+
+Before there is data worth keeping, discard the volume and let `initdb` run again against
+the current password:
+
+🖥️
+
+```bash
+docker compose down
+docker volume rm "$(docker volume ls -q | grep tpadmin_db_data)"
+docker compose up -d
+```
+
+Once the panel holds real routes, rotate with `ALTER USER` instead — see
+[Maintenance](#maintenance--upgrades).
 
 **Now confirm Traefik is routing to it.** From a LAN client inside `TPADMIN_ALLOWLIST`:
 
@@ -1283,7 +1338,8 @@ and nothing named `traefik-proxy-admin` should remain.
 | 🔴 Stack fails to start: `image not found` | 4 | The image was never built. It is local-only — there is no registry to pull it from. |
 | 🟠 App healthy but every page errors | 4 | `DATABASE_URL` mangled by punctuation in the password. Check with `docker exec traefik-proxy-admin env \| grep DATABASE_URL`. |
 | 🟠 `getaddrinfo ENOTFOUND` naming part of your password | 4 | An `@` in `POSTGRES_PASSWORD` split the URL. Use alphanumerics. |
-| 🟠 `\dt` returns no tables | 5 | Migrations failed — almost always the password above. |
+| 🟠 `\dt` returns no tables | 5 | Migrations failed. Read `docker logs traefik-proxy-admin-db` — `password authentication failed` means credentials, and the cause is usually the stale volume below rather than the password itself. |
+| 🟠 `password authentication failed` after a **previous failed deploy** | 4 | A deploy that failed for any reason still started Postgres, which initialized the volume with whatever `POSTGRES_PASSWORD` was set *then*. Postgres reads that variable only at first init, so a later change updates the app's `DATABASE_URL` and not the server. See [Stale database volume](#stale-database-volume). |
 | 🟠 Panel loads, routes never appear in Traefik | 6 | Provider not added, or Traefik not restarted since. |
 | 🟠 `wget: bad address 'traefik-proxy-admin'` from the traefik container | 6 | Containers not on a shared network; check `traefik.docker.network=edge`. |
 | 🟠 **Routes work, then 404 the next day** | 7 | 12-hour auto-disable. Set the enable duration to forever. |
