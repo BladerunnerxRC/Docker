@@ -117,7 +117,7 @@ would fail at `docker compose up`. Every deviation:
 | `middlewares=security@file, base@file, auth-traefik@docker` | `tpadmin-ipallow@docker, tpadmin-auth@docker, security-headers@file, compression@file` | None of the upstream middleware names exist here. A router referencing a missing middleware is dropped with a `middleware does not exist` error. |
 | authentik forward-auth (`outpost.goauthentik.io` router) | BasicAuth against the existing `.htpasswd` + IP allowlist | No authentik on this network. See [Security](#security). |
 | `tls.domains[0].main` / `sans` wildcard labels | `tls.certresolver=stepca` | The step-ca resolver issues per-host certs via `tlsChallenge`; no wildcard is requested. |
-| `image: ...:latest` | Built from source, pinned to git tag `v0.2.2` | Upstream ships amd64 only and this host is a Pi 5 ([details](#non-amd64-hosts)). Pinning also stops a `latest` pull from rewriting your routing table unattended. |
+| `image: ...:latest` | Built from source, pinned to main commit `74f39a38` | Upstream ships amd64 only and this host is a Pi 5; the `v0.2.2` tag no longer builds ([details](#non-amd64-hosts)). Pinning also stops a moving `latest` from rewriting your routing table unattended. |
 | Watchtower + promtail labels | dropped | Not used in this repo. |
 | No resource limits, no `cap_drop` | Limits, `cap_drop: ALL`, `read_only` | House style — see [Manyfold3D](../Manyfold3D/docker-compose.yml). |
 
@@ -687,9 +687,22 @@ Nothing mentioning `http` and `error` together. From step 9 onwards, panel route
 show up under the `http` provider:
 
 ```bash
-curl -ks https://traefik.shome/api/http/routers \
+curl -ks -u "$TRAEFIK_API_USER" https://traefik.shome/api/http/routers \
 | jq 'map(select(.provider=="http")) | map({name, rule, service, status})'
 ```
+
+> [!NOTE]
+> **The Traefik API needs credentials.** This host runs with `api.insecure` **off**, so
+> `/api/...` is reachable only through the `traefik.shome` router, behind
+> `traefik-ipallow@docker` + `traefik-auth@docker`. Every `curl` against it in this
+> document therefore passes `-u`. Set the user once per shell and let curl prompt for the
+> password rather than putting it in your history:
+>
+> ```bash
+> export TRAEFIK_API_USER=tpadmin
+> ```
+>
+> Without it you get a bare `401` and no JSON, which reads like a broken provider.
 
 ---
 
@@ -700,7 +713,7 @@ generated routes work at all. Three are here; the fourth is per-domain in step 8
 
 | Setting | Set it to | Consequence if wrong |
 | --- | --- | --- |
-| **Default entrypoint** | `websecure` | Empty means routers get no `entryPoints`, so Traefik attaches them to *every* entrypoint — including `:8082`, which serves the API. |
+| **Default entrypoint** | `websecure` | Empty means routers get no `entryPoints`, so Traefik binds them to *every* entrypoint — including `web` (`:80`, plaintext) and `metrics` (`:8082`). Routes you believe are HTTPS-only would answer on port 80 too. |
 | **Admin panel domain** | `traefik-proxy-admin:3000` | Used as the forward-auth address for protected services and as the upstream for the panel's own generated router. Traefik is the only caller, so a container-reachable address is what matters. The default `localhost:3000` points Traefik at itself. |
 | **Default enable duration** | *Forever* — no duration | Routes silently stop working after 12 hours. See below. |
 | **Global middlewares** *(optional)* | `security-headers@file`, `compression@file` | Applies your existing hardening to every panel route. The `@file` suffix is required. |
@@ -762,7 +775,7 @@ Within ~10 seconds (one poll interval):
 docker exec traefik wget -qO- http://traefik-proxy-admin:3000/api/traefik/config | jq
 
 # 2. Traefik has ingested it
-curl -ks https://traefik.shome/api/http/routers \
+curl -ks -u "$TRAEFIK_API_USER" https://traefik.shome/api/http/routers \
 | jq 'map(select(.provider=="http")) | map({name, rule, service, status})'
 ```
 
@@ -863,7 +876,7 @@ label. Currently claimed: `traefik`, `dns`, `whoami`, `dockhand`, `haos`, `komga
 Your own duplicate detector already covers this:
 
 ```bash
-curl -ks https://traefik.shome/api/http/routers \
+curl -ks -u "$TRAEFIK_API_USER" https://traefik.shome/api/http/routers \
 | jq 'map({name,provider,rule,service}) | group_by(.rule) | map(select(length>1))'
 ```
 
@@ -911,9 +924,12 @@ Residual exposure worth knowing about:
   table. Any container on the shared `edge` network can read it. That is inherent — the
   Traefik HTTP provider sends no credentials — but it means `edge` should be treated as
   a trusted network, not a dumping ground.
-- **`api.insecure: true` in [traefik/traefik.yml](../traefik/traefik.yml)** publishes the
-  Traefik API on host port `8082` with no auth, which also exposes the config the panel
-  generates. Unrelated to this stack, but it widens the same blast radius.
+- **The Traefik API mirrors whatever the panel publishes.** It is properly protected here
+  — [traefik.yml](../traefik/traefik.yml) does **not** set `api.insecure`, so `/api` is
+  only served via the `traefik.shome` router behind an IP allowlist and BasicAuth. Worth
+  keeping that way: anyone who can read `/api/http/routers` can read every route the panel
+  generates, and `:8082` is a plain `metrics` entrypoint rather than a second, unguarded
+  door onto the same data.
 
 ---
 
@@ -1055,7 +1071,7 @@ docker exec traefik wget -qO- http://traefik-proxy-admin:3000/api/traefik/config
 | jq > ~/tpadmin-routes-$(date +%F).json
 
 # What that means in practice
-curl -ks https://traefik.shome/api/http/routers \
+curl -ks -u "$TRAEFIK_API_USER" https://traefik.shome/api/http/routers \
 | jq -r 'map(select(.provider=="http")) | .[] | "\(.rule)  ->  \(.service)"'
 ```
 
@@ -1109,7 +1125,7 @@ at this point each host has two routers, one from each provider, which is the on
 duplicate rules are expected:
 
 ```bash
-curl -ks https://traefik.shome/api/http/routers \
+curl -ks -u "$TRAEFIK_API_USER" https://traefik.shome/api/http/routers \
 | jq 'map(select(.rule=="Host(`example.shome`)")) | map({name, provider, status})'
 ```
 
@@ -1147,11 +1163,11 @@ docker restart traefik
 
 ```bash
 # No panel routers remain — expect 0
-curl -ks https://traefik.shome/api/http/routers \
+curl -ks -u "$TRAEFIK_API_USER" https://traefik.shome/api/http/routers \
 | jq '[.[] | select(.provider=="http")] | length'
 
 # Your other providers are untouched — expect only file / docker / internal
-curl -ks https://traefik.shome/api/http/routers | jq -r '.[].provider' | sort | uniq -c
+curl -ks -u "$TRAEFIK_API_USER" https://traefik.shome/api/http/routers | jq -r '.[].provider' | sort | uniq -c
 
 # No provider errors
 docker logs traefik 2>&1 | tail -40 | grep -i error

@@ -1,30 +1,38 @@
+# traefik.yml - static configuration
+log:
+  level: DEBUG
+
 api:
   dashboard: true
-  insecure: true
-
-log:
-  level: INFO
 
 entryPoints:
   web:
     address: ":80"
   websecure:
     address: ":443"
-  traefik:
+  metrics:
     address: ":8082"
-    
+
 providers:
   docker:
     exposedByDefault: false
   file:
     directory: /etc/traefik/dynamic
     watch: true
+  http:
+    endpoint: "http://traefik-proxy-admin:3000/api/traefik/config"
+    pollInterval: "10s"
+    pollTimeout: "5s"
 
 certificatesResolvers:
   stepca:
     acme:
-      email: admin@shome
-      storage: /etc/traefik/acme/acme.json
-      caServer: https://stepca.shome:9000/acme/acme/directory
+      caServer: "https://ca.shome:9000/acme/traefik/directory"
+      # caCertificates is a LIST of PEM paths. A bare string here is the documented
+      # way to get it silently ignored, which would leave step-ca's root untrusted
+      # and quietly fall back to Traefik's default self-signed cert.
+      caCertificates:
+        - "/etc/traefik/stepca/root_ca.crt"
+      storage: "/etc/traefik/acme/acme.json"
+      # Documented YAML form is an empty object. `true` is the CLI-flag spelling.
       tlsChallenge: {}
-

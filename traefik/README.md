@@ -185,17 +185,27 @@ Rollback to a specific file:
 sudo /usr/local/sbin/edge-rollback-traefik-dynamic /opt/netlab-stack/traefik/backups/dynamic-live-YYYY-MM-DD-HHMMSS.tgz
 
 Verification Cheatsheet
+
+These all hit the Traefik API, which is NOT open: traefik.yml has no `api.insecure`, so
+/api is served only through the traefik.shome router, behind traefik-ipallow@docker and
+traefik-auth@docker. Every call needs credentials from .htpasswd. Set the user once and
+let curl prompt for the password:
+
+export TRAEFIK_API_USER=tpadmin
+
+Without it these return a bare 401 with no JSON, which looks like Traefik is broken.
+
 Show file-provider routers
 
-curl -ks https://traefik.shome/api/http/routers \
+curl -ks -u "$TRAEFIK_API_USER" https://traefik.shome/api/http/routers \
 | jq 'map(select(.provider=="file")) | map(.name) | sort'
 
 Show file-provider middlewares
-curl -ks https://traefik.shome/api/http/middlewares \
+curl -ks -u "$TRAEFIK_API_USER" https://traefik.shome/api/http/middlewares \
 | jq 'map(select(.provider=="file")) | map(.name) | sort'
 
 Detect duplicate router rules (should be empty)
-curl -ks https://traefik.shome/api/http/routers \
+curl -ks -u "$TRAEFIK_API_USER" https://traefik.shome/api/http/routers \
 | jq 'map({name,provider,rule,service})
       | group_by(.rule)
       | map(select(length>1))'
