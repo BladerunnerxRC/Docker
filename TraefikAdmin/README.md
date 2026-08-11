@@ -293,14 +293,47 @@ sudo stat -c '%F  %n' /opt/netlab-stack/traefik/auth/.htpasswd
 
 </details>
 
-**Check** — the user should be listed, and Traefik re-reads the file on change, so no
-restart is needed:
+**Check** — the user should be listed:
 
 🖥️
 
 ```bash
 sudo cut -d: -f1 /opt/netlab-stack/traefik/auth/.htpasswd
 ```
+
+> [!CAUTION]
+> **Traefik does not watch this file.** It parses the usersfile **once**, when the
+> BasicAuth middleware is constructed, and holds that user map in memory. Editing
+> `.htpasswd` afterwards changes nothing until something rebuilds the middleware:
+>
+> ```bash
+> docker restart traefik              # always works
+> docker restart traefik-proxy-admin  # cheaper: the Docker event refreshes config
+> ```
+>
+> The second avoids an edge-proxy outage — the container stopping and starting is a
+> configuration change, which makes Traefik rebuild its Docker-provider middlewares and
+> re-read the file. Wait for `(healthy)` before testing; while it restarts the router is
+> gone and you get `404`, not `401`.
+>
+> This is why **step 2 must be completed before [step 4](#step-4--deploy-the-stack-in-portainer)**.
+> Add users first and the middleware is built from a file that already contains them.
+> Add them later and every login fails — including brand-new users with known-good
+> passwords — with nothing but a `DBG Authentication failed` line to show for it.
+
+One more thing to be clear about before you type this password anywhere.
+
+> [!IMPORTANT]
+> **This password has nothing to do with anything in the stack environment.**
+> Two unrelated credentials in this stack are both named `tpadmin`:
+>
+> | Credential | Where it lives | Who uses it |
+> | --- | --- | --- |
+> | BasicAuth user `tpadmin` | `.htpasswd`, set by `htpasswd` | **You**, at the browser prompt |
+> | `POSTGRES_USER=tpadmin` | Stack environment variables | The app, talking to Postgres |
+>
+> `POSTGRES_PASSWORD` is a database credential that no human ever types. Entering it at
+> the login prompt yields a `401` that looks identical to every other cause.
 
 ---
 
@@ -1345,7 +1378,9 @@ and nothing named `traefik-proxy-admin` should remain.
 | 🟠 **Routes work, then 404 the next day** | 7 | 12-hour auto-disable. Set the enable duration to forever. |
 | 🟠 Route resolves but shows a cert warning | 8 | Domain has no `certResolver` set in the UI. Set `stepca`. |
 | 🟠 Router shows in the API with an error about a missing middleware | 7 | Global middleware referenced without the `@file` suffix. |
-| 🟡 401 loop in the browser on the panel | 2 | No matching user in `/opt/netlab-stack/traefik/auth/.htpasswd`. |
+| 🟠 **401 for every user, including a freshly created one** | 2 | Traefik is holding a cached user map. Compare the file's mtime against the last middleware build — if the file is newer, that's it: `docker exec traefik ls -l /etc/traefik/.htpasswd` vs `docker logs traefik \| grep "Creating middleware.*auth" \| tail -1`. Fix with `docker restart traefik`. |
+| 🟠 401 when using the password from the stack env | 2 | `POSTGRES_PASSWORD` is the *database* credential. The login password lives only in `.htpasswd`. |
+| 🟡 401 loop in the browser on the panel | 2 | No matching user in `/opt/netlab-stack/traefik/auth/.htpasswd`, or the browser is replaying cached bad credentials — retest with `curl -u` before believing the browser. |
 | 🟡 403 before any password prompt | 4 | Client outside `TPADMIN_ALLOWLIST`. |
 | 🟡 Two routes for one host, behaviour flips on restart | 9 | Duplicate rule across providers. Run the duplicate detector in [Coexistence rules](#coexistence-rules). |
 | 🟡 Traefik routes to the wrong IP for the panel | 4 | `traefik.docker.network=edge` removed; Traefik picked the `tpadmin-back` address, which it cannot reach. |
