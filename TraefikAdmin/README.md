@@ -99,7 +99,7 @@ Two config paths reach Traefik, and they never touch each other:
 
 `rsync --delete` in the D&R script only ever sees `dynamic/`, so it cannot delete a
 route created in the panel — and the panel cannot overwrite a hand-written YAML route.
-That separation is the main reason this stack uses the HTTP provider rather than
+<!-- That separation is the main reason this stack uses the HTTP provider rather than -->
 writing files into the watched directory.
 
 > [!IMPORTANT]
