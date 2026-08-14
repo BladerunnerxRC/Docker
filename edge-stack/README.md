@@ -70,10 +70,25 @@ Git-backed one in place** — the old stack has to go first, or the new deploy f
 dig +short @192.168.200.52 whoami.shome     # expect 192.168.200.52
 dig +short @192.168.200.52 google.com       # upstream resolution works
 curl -ks https://traefik.shome/api/http/routers | jq 'map(select(.provider=="file"))|length'
+curl -ks https://traefik.shome/api/http/routers | jq 'length'
 
-# 2. Pre-pull so the cutover is not waiting on a download
+# 2. Pre-pull so the cutover is not waiting on a download.
+#    Verified 2026-08-14: this tag is NOT yet on the host, so skipping this
+#    step lengthens the DNS outage by however long the pull takes.
 docker pull traefik:v3.7.10
 ```
+
+**Measured baseline, 2026-08-14** — compare against these after cutover:
+
+| Check | Value |
+|---|---|
+| `whoami.shome` A record | `192.168.200.52` |
+| Upstream DNS (`google.com`) | resolves |
+| File-provider routers | **13** |
+| Total routers | **16** (13 file + 3 docker) |
+| `https://whoami.shome/` | `200` |
+| `https://dns.shome/` | `302` (AdGuard login redirect — normal) |
+| `https://traefik.shome/dashboard/` | `200` |
 
 Then delete the old `edge-stack` stack in the Portainer UI — **this starts the DNS
 outage** — and immediately deploy the new Git-backed stack per the steps above.
@@ -94,13 +109,20 @@ docker ps --filter label=com.docker.compose.project=edge-stack \
 dig +short @192.168.200.52 whoami.shome     # 192.168.200.52
 dig +short @192.168.200.52 google.com       # real answer
 
-for h in whoami dns traefik; do
-  echo -n "$h.shome -> "; curl -kso /dev/null -w '%{http_code}\n' https://$h.shome/
-done
+# NOTE: check the dashboard at /dashboard/, NOT at /.
+# The router only matches PathPrefix(/api) and PathPrefix(/dashboard), so a bare
+# https://traefik.shome/ correctly returns 404 — that is not a failure.
+curl -kso /dev/null -w 'whoami   -> %{http_code} (expect 200)\n' https://whoami.shome/
+curl -kso /dev/null -w 'dns      -> %{http_code} (expect 302)\n' https://dns.shome/
+curl -kso /dev/null -w 'dashboard-> %{http_code} (expect 200)\n' https://traefik.shome/dashboard/
+
+# Router counts must match the baseline table above (13 file, 16 total)
+curl -ks https://traefik.shome/api/http/routers | jq 'map(select(.provider=="file"))|length'
+curl -ks https://traefik.shome/api/http/routers | jq 'length'
 ```
 
-Success = three containers up on the right tags, DNS resolving, file-provider router
-count matching the baseline, and no step-ca certificate errors.
+Success = three containers up on the right tags, DNS resolving, **13 file-provider
+routers and 16 total**, and no step-ca certificate errors.
 
 ---
 
