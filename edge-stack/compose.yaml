@@ -1,0 +1,119 @@
+# edge-stack — Traefik + AdGuard Home + whoami
+#
+# Captured from the LIVE state of smiddleware (192.168.200.52) on 2026-08-14.
+# This is a faithful reproduction of the three running containers, with one
+# deliberate change: the Traefik image is pinned to the version that was
+# actually running (v3.7.10) rather than the floating :latest tag.
+#
+# Runtime config lives OUTSIDE this repo, bind-mounted from /opt/netlab-stack/.
+# Recreating these containers does not touch that data (certs, acme.json,
+# AdGuard config and stats all persist).
+#
+# Every path below has a built-in default, so this file deploys correctly even
+# if no environment variables are set in Portainer. Override via .env or the
+# Portainer stack UI only if your paths differ.
+
+services:
+  traefik:
+    image: traefik:v3.7.10
+    container_name: traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8082:8082"          # metrics entrypoint
+    extra_hosts:
+      # LAN-only step-ca, hardcoded so ACME does not depend on service boot order
+      - "ca.shome:192.168.200.3"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${TRAEFIK_YML:-/opt/netlab-stack/traefik/traefik.yml}:/etc/traefik/traefik.yml:ro
+      - ${TRAEFIK_DYNAMIC:-/opt/netlab-stack/traefik/dynamic}:/etc/traefik/dynamic:ro
+      - ${TRAEFIK_CERTS:-/opt/netlab-stack/traefik/certs}:/etc/traefik/certs:ro
+      - ${TRAEFIK_ACME:-/opt/netlab-stack/traefik/acme}:/etc/traefik/acme:rw
+      - ${TRAEFIK_STEPCA:-/opt/netlab-stack/traefik/stepca}:/etc/traefik/stepca:ro
+      - ${TRAEFIK_HTPASSWD:-/opt/netlab-stack/traefik/auth/.htpasswd}:/etc/traefik/.htpasswd:ro
+      # NOTE: this mounts a DIRECTORY at /kubeconfig, but the flags below expect a
+      # FILE. These providers therefore do not work. Reproduced deliberately to
+      # match the running container — see README "Known cruft".
+      - ${TRAEFIK_KUBECONFIG:-/opt/netlab-stack/traefik/kubeconfig}:/kubeconfig:ro
+    command:
+      - --log.level=DEBUG
+      - --providers.kubernetesingress=true
+      - --providers.kubernetesingress.kubeconfig=/kubeconfig
+      - --providers.kubernetescrd=true
+      - --providers.kubernetescrd.kubeconfig=/kubeconfig
+    labels:
+      - "traefik.enable=true"
+
+      # Dashboard / API router, scoped to just those two path prefixes
+      - "traefik.http.routers.traefik.rule=Host(`traefik.${BASE_DOMAIN:-shome}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.routers.traefik.tls=true"
+      - "traefik.http.routers.traefik.tls.certresolver=${CERTRESOLVER:-stepca}"
+      - "traefik.http.routers.traefik.service=api@internal"
+
+      # Dashboard protection: IP allowlist ONLY — this matches production today.
+      - "traefik.http.routers.traefik.middlewares=traefik-ipallow@docker"
+      - "traefik.http.middlewares.traefik-ipallow.ipallowlist.sourcerange=${TRAEFIK_DASHBOARD_ALLOWLIST:-192.168.200.0/24,192.168.0.0/16}"
+
+      # --- BasicAuth: NOT currently active in production ---------------------
+      # /opt/netlab-stack/traefik/auth/.htpasswd exists and is already mounted
+      # above, but nothing references it. To require a password on the dashboard,
+      # uncomment the two middleware lines below AND change the router
+      # middlewares line above to:
+      #   traefik.http.routers.traefik.middlewares=traefik-ipallow@docker,traefik-auth@docker
+      #
+      # - "traefik.http.middlewares.traefik-auth.basicauth.usersfile=/etc/traefik/.htpasswd"
+      # - "traefik.http.middlewares.traefik-auth.basicauth.removeheader=true"
+
+  adguardhome:
+    image: adguard/adguardhome:latest
+    container_name: adguardhome
+    restart: unless-stopped
+    networks:
+      - edge
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "3000:3000/tcp"
+    volumes:
+      - ${ADGUARD_CONF:-/opt/netlab-stack/adguard/conf}:/opt/adguardhome/conf:rw
+      - ${ADGUARD_WORK:-/opt/netlab-stack/adguard/work}:/opt/adguardhome/work:rw
+    # Matches the image default CMD; stated explicitly so the deployed config is
+    # not silently changed by a future image update.
+    command:
+      - --no-check-update
+      - -c
+      - /opt/adguardhome/conf/AdGuardHome.yaml
+      - -w
+      - /opt/adguardhome/work
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.adguard.rule=Host(`dns.${BASE_DOMAIN:-shome}`)"
+      - "traefik.http.routers.adguard.entrypoints=websecure"
+      - "traefik.http.routers.adguard.tls=true"
+      - "traefik.http.routers.adguard.tls.certresolver=${CERTRESOLVER:-stepca}"
+      # AdGuard's web UI is on 3000 here, NOT 80 — it shares :80 with Traefik.
+      - "traefik.http.services.adguard.loadbalancer.server.port=3000"
+
+  whoami:
+    image: traefik/whoami:latest
+    container_name: whoami
+    restart: unless-stopped
+    networks:
+      - edge
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whoami.rule=Host(`whoami.${BASE_DOMAIN:-shome}`)"
+      - "traefik.http.routers.whoami.entrypoints=websecure"
+      - "traefik.http.routers.whoami.tls=true"
+      - "traefik.http.routers.whoami.tls.certresolver=${CERTRESOLVER:-stepca}"
+
+networks:
+  edge:
+    name: edge

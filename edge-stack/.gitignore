@@ -1,0 +1,7 @@
+# Never commit the real environment file — this repo is public.
+.env
+.env.local
+
+# Local backups of runtime config
+*.bak
+*.pre-migrate-*
