@@ -40,6 +40,17 @@ repo are reference material and are not what Traefik loads.
 
 The repo is public, so **no credentials are required**.
 
+smiddleware runs the **Portainer agent** (`portainer/agent:2.39.0`, listening on `:9001`);
+there is no Portainer server on this host — it lives elsewhere on the LAN. For an Agent
+endpoint the **Portainer server** performs the `git clone` and ships the resulting compose
+to the agent. Three consequences worth knowing:
+
+- GitHub must be reachable **from the Portainer server**, not from smiddleware. Whether
+  smiddleware can reach GitHub is irrelevant to this deploy.
+- Every bind-mount path in `compose.yaml` must exist **on smiddleware** (the agent host).
+  They all do — see the persistent-data section above.
+- Keep the agent and server on matching minor versions. The agent is `2.39.0`.
+
 1. **Portainer → Stacks → Add stack**
 2. Name: `edge-stack`
 3. Build method: **Repository**
