@@ -57,19 +57,22 @@ services:
       - "traefik.http.routers.traefik.tls.certresolver=${CERTRESOLVER:-stepca}"
       - "traefik.http.routers.traefik.service=api@internal"
 
-      # Dashboard protection: IP allowlist ONLY — this matches production today.
-      - "traefik.http.routers.traefik.middlewares=traefik-ipallow@docker"
+      # Dashboard protection: IP allowlist AND BasicAuth — both must pass.
+      # Order matters: the allowlist runs first, so off-LAN clients are rejected
+      # before they ever get a password prompt.
+      - "traefik.http.routers.traefik.middlewares=traefik-ipallow@docker,traefik-auth@docker"
       - "traefik.http.middlewares.traefik-ipallow.ipallowlist.sourcerange=${TRAEFIK_DASHBOARD_ALLOWLIST:-192.168.200.0/24,192.168.0.0/16}"
 
-      # --- BasicAuth: NOT currently active in production ---------------------
-      # /opt/netlab-stack/traefik/auth/.htpasswd exists and is already mounted
-      # above, but nothing references it. To require a password on the dashboard,
-      # uncomment the two middleware lines below AND change the router
-      # middlewares line above to:
-      #   traefik.http.routers.traefik.middlewares=traefik-ipallow@docker,traefik-auth@docker
+      # BasicAuth against the bcrypt htpasswd file mounted read-only above. That
+      # file is host state under /opt/netlab-stack/ and is NOT in this repo, so
+      # no credentials are committed. To add or rotate a user:
+      #   htpasswd -B /opt/netlab-stack/traefik/auth/.htpasswd <user>
+      # Changes take effect without a restart — Traefik re-reads the file.
       #
-      # - "traefik.http.middlewares.traefik-auth.basicauth.usersfile=/etc/traefik/.htpasswd"
-      # - "traefik.http.middlewares.traefik-auth.basicauth.removeheader=true"
+      # NOTE: this covers /api as well as /dashboard, so any script or widget
+      # polling the Traefik API must now send credentials.
+      - "traefik.http.middlewares.traefik-auth.basicauth.usersfile=/etc/traefik/.htpasswd"
+      - "traefik.http.middlewares.traefik-auth.basicauth.removeheader=true"
 
   adguardhome:
     image: adguard/adguardhome:latest
