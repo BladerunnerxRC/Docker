@@ -355,6 +355,25 @@ approaches that do work:
 
 **Option 1 — ADB over the network** (most reliable, no extra apps):
 
+> [!NOTE]
+> **What is ADB?** The **Android Debug Bridge** is Google's command-line tool for
+> talking to Android devices over USB or the network. It ships in the
+> **Android SDK Platform Tools** bundle — a free, standalone ~10 MB download; you
+> do *not* need Android Studio. Unzip it anywhere and run `adb` from that folder
+> (or add the folder to your `PATH`).
+>
+> | Platform | Get it |
+> |---|---|
+> | Any | [SDK Platform Tools download page](https://developer.android.com/tools/releases/platform-tools) — direct zips: [Windows](https://dl.google.com/android/repository/platform-tools-latest-windows.zip) · [macOS](https://dl.google.com/android/repository/platform-tools-latest-darwin.zip) · [Linux](https://dl.google.com/android/repository/platform-tools-latest-linux.zip) |
+> | Windows | `winget install Google.PlatformTools` |
+> | macOS | `brew install --cask android-platform-tools` |
+> | Debian / Ubuntu | `sudo apt install adb` |
+> | Fedora | `sudo dnf install android-tools` |
+> | Arch | `sudo pacman -S android-tools` |
+>
+> Verify with `adb version`. Any machine on the same LAN as the Shield will do —
+> including the Docker host running this stack.
+
 1. On the Shield: **Settings → Device Preferences → About**, click **Build**
    seven times to unlock Developer options.
 2. **Settings → Device Preferences → Developer options**, enable
@@ -670,6 +689,7 @@ version, and restoring into a different Kodi release will not end well.
 | 🟠 | Config changes don't take effect | Home button doesn't stop Kodi on Android. **Force stop** it — see [step 1](#1-fully-restart-kodi). |
 | 🟠 | Can't reach `Android/data/` to place the file | Android scoped storage hides it from file managers and SMB. Use ADB or Kodi's own file manager — see [Shield Pro setup](#getting-the-file-onto-an-nvidia-shield-pro). |
 | 🟠 | `adb push` reports success but nothing changes | The on-screen authorisation prompt was never accepted. Reconnect and watch the TV. |
+| 🟠 | `adb: command not found` / `'adb' is not recognized` | The Android SDK Platform Tools aren't installed or aren't on your `PATH`. [Download them](https://developer.android.com/tools/releases/platform-tools) or install via your package manager — see [Shield Pro setup](#getting-the-file-onto-an-nvidia-shield-pro). |
 | 🟠 | Scheduled library update never runs | The Shield slept. Settings → Device Preferences → Sleep → **Never**. |
 
 ### 🗄️ Database & shell
