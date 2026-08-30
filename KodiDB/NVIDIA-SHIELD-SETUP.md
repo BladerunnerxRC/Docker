@@ -139,10 +139,21 @@ adb version
 
    ```bash
    adb connect 192.168.1.50:5555          # the Shield's IP from Step 3
-   adb push advancedsettings.xml \
-     /sdcard/Android/data/org.xbmc.kodi/files/.kodi/userdata/advancedsettings.xml
+   adb shell mkdir -p /sdcard/Android/data/org.xbmc.kodi/files/.kodi/userdata
+   adb push advancedsettings.xml /sdcard/Android/data/org.xbmc.kodi/files/.kodi/userdata/advancedsettings.xml
    adb disconnect
    ```
+
+   > [!NOTE]
+   > Keep each command on **one line**. A trailing `\` for line continuation
+   > is bash syntax and does nothing useful in PowerShell/cmd — it gets
+   > pushed to the device as a literal character, corrupting the path.
+   >
+   > The `mkdir -p` is required because Step 2 deliberately skips launching
+   > Kodi first — which means `.kodi/userdata/` doesn't exist yet.
+   > `adb push` won't create missing parent directories on its own; without
+   > this step it fails with `remote secure_mkdirs failed: No such file or
+   > directory`.
 
 3. **Accept the on-screen authorisation prompt** on the TV the first time you
    connect. If you skip this, `adb push` reports success but nothing actually
@@ -260,6 +271,8 @@ scheduled update.
 | 🟠 | Config changes don't take effect | Home button doesn't stop Kodi on Android — you need **Force stop** (Step 6). |
 | 🟠 | Can't reach `Android/data/` with a file manager | Expected — Android scoped storage hides it. Use ADB (Steps 4–5). |
 | 🟠 | `adb push` reports success but nothing changes | The on-screen authorisation prompt was never accepted — reconnect and watch the TV. |
+| 🟠 | `remote secure_mkdirs failed: No such file or directory` | `.kodi/userdata/` doesn't exist yet because Kodi hasn't been launched — run `adb shell mkdir -p ...` first (Step 5). |
+| 🟠 | `remote couldn't create file: Read-only file system` | The destination path got mangled (often a stray `\` line-continuation from a bash example run in PowerShell/cmd) and resolved to device root. Re-check the full path is on one line. |
 | 🟠 | `adb: command not found` / `'adb' is not recognized` | Platform Tools aren't installed or aren't on your `PATH` — see Step 4. |
 | 🟠 | Media plays on one client, "file not found" on another | A source was added by local path instead of `nfs://`/`smb://` — see Step 7. |
 | 🟠 | Scheduled library update never runs | The Shield slept — see Step 9. |
