@@ -198,6 +198,51 @@ manually — ADB can't reopen the app for you.)
    - /storage/emulated/0/Movies           ← local path: unreachable elsewhere
    ```
 
+   > [!NOTE]
+   > Shares are configured **inside Kodi only** — there's nothing to set up
+   > at the Shield/Android OS level. Kodi has its own built-in NFS and SMB
+   > clients and talks to the NAS directly over the network; Android TV
+   > doesn't expose an OS-level "mount a network share" feature the way a
+   > desktop Linux box does. Add the source via **Settings → Media →
+   > Videos/Music → Add source**, typing the `nfs://`/`smb://` URL directly
+   > rather than browsing to it (browse-discovery can add a trailing slash
+   > inconsistently between platforms, which is enough for Kodi to treat it
+   > as a different source).
+   >
+   > This also applies to every *other* client in your setup, including
+   > desktop ones: never mount the share at the OS level (a mapped drive
+   > letter, an `/etc/fstab` mount) and point Kodi at that local path
+   > instead of the `nfs://`/`smb://` URL. Kodi stores the literal source
+   > path string in the database — a local-mount path on one client will
+   > never match the network path on another, causing duplicate library
+   > entries and per-device watched state (see the
+   > [Troubleshooting](#troubleshooting) table).
+
+   **Synology NAS setup (if that's your media server):**
+
+   Prefer **NFS** over SMB for Synology + Kodi — faster, no per-file auth
+   handshake, and avoids SMB1/signing compatibility issues that cause
+   playback stalls on Android TV clients. Use SMB only as a fallback for a
+   client that can't do NFS.
+
+   1. **Control Panel → Shared Folder** — create `Movies` and `TV` (or one
+      `Media` folder with subfolders).
+   2. **Control Panel → File Services → NFS** — enable the NFS service
+      (v4.1 if every client supports it, v3 for max compatibility).
+   3. On the shared folder → **Edit → NFS Permissions → Create**:
+      - Hostname/IP: your LAN subnet (e.g. `192.168.1.0/24`) or specific
+        client IPs.
+      - Privilege: **Read/Write** — simplest option; Kodi can write
+        metadata-adjacent files depending on settings, so read-only causes
+        occasional errors.
+      - Squash: **No mapping**, to avoid permission errors. Tighten later
+        if you care about NAS-side file ownership.
+   4. Note the exact path shown (e.g. `/volume1/Movies`) — this is what
+      goes after the host in the `nfs://` URL.
+   5. Before running the full scan in step 3 below, confirm read access
+      works: `showmount -e <nas-ip>` from the Docker host, or just add the
+      source in Kodi and browse into it first.
+
 3. Let the scan run to completion. This builds the library every other client
    will read.
 

@@ -347,6 +347,55 @@ Contents:
 > - `<host>` is the **Docker host** IP (the machine running this stack), **not** the NAS.
 > - `<user>`/`<pass>` must match `MARIADB_USER`/`MARIADB_PASSWORD`.
 
+### How a client connects, and what lives where
+
+```mermaid
+flowchart LR
+    subgraph client["🎬 One Kodi client"]
+        direction TB
+        CONF["advancedsettings.xml<br/>host · port · user · pass"]
+        SRC["sources.xml<br/>nfs:// · smb:// paths"]
+        LOCAL[("Local-only SQLite<br/>Addons33 · Textures13 · ViewModes6")]
+        CACHE["Local thumbnail / fanart cache"]
+    end
+
+    subgraph db["🐳 mariadb-kodi — shared, on the Docker host"]
+        direction TB
+        VID[("MyVideos1xx<br/>movies · TV · watched state · resume points")]
+        MUS[("MyMusicNN<br/>artists · albums · play counts")]
+    end
+
+    NAS[("🗂️ NAS<br/>the actual video/audio files")]
+
+    CONF -->|"MySQL protocol<br/>TCP :3306"| VID
+    CONF -->|"MySQL protocol<br/>TCP :3306"| MUS
+    SRC -.->|"nfs:// / smb://<br/>direct file access"| NAS
+    VID -.->|"stores the path string<br/>never the file itself"| SRC
+
+    classDef client fill:#17B2E7,stroke:#0B6E91,stroke-width:2px,color:#fff
+    classDef database fill:#003545,stroke:#C0765A,stroke-width:2px,color:#fff
+    classDef local fill:#8899A6,stroke:#57636C,stroke-width:2px,color:#fff
+    classDef storage fill:#2496ED,stroke:#14539A,stroke-width:2px,color:#fff
+
+    class CONF,SRC client
+    class VID,MUS database
+    class LOCAL,CACHE local
+    class NAS storage
+```
+
+Solid lines are the MySQL connection `advancedsettings.xml` opens (`:3306`); dotted
+lines are direct file access that never touches the database. Two things this
+makes explicit:
+
+- **The database stores metadata and the `nfs://`/`smb://` path string — never
+  the media file.** Playback always goes client → NAS directly, which is why a
+  path mismatch (a local mount instead of the network URL) breaks the shared
+  library without ever showing up as a database error.
+- **Not everything is shared.** `Addons33`, `Textures13`, and `ViewModes6` are
+  local SQLite databases per client — only `MyVideos*`/`MyMusic*` live in
+  MariaDB. Thumbnail/fanart cache is local too — each client re-downloads its
+  own (see [Expected behaviour that looks like a bug](#expected-behaviour-that-looks-like-a-bug)).
+
 ### Getting the file onto an NVIDIA Shield Pro
 
 Android's scoped storage hides `Android/data/` from the built-in file manager and
