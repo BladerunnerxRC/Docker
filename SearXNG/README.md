@@ -10,7 +10,7 @@ Privacy-respecting metasearch engine, deployed as a two-service Portainer stack:
 
 | Service | Image | Purpose |
 | --- | --- | --- |
-| `searxng` | `searxng/searxng:latest` | The metasearch engine and web UI, published on host port **8888** (container 8080). |
+| `searxng` | `searxng/searxng` (pinned by tag + digest) | The metasearch engine and web UI, bound to **192.168.200.14:8888** (container 8080). |
 | `valkey` | `valkey/valkey:8-alpine` | Redis-compatible backend used by SearXNG for rate limiting and caching. Not exposed on the host; reached over the internal `searxng_net` bridge network. |
 
 SearXNG waits for Valkey's healthcheck to pass before starting
@@ -44,7 +44,7 @@ All state lives in named volumes — no host paths to pre-create:
 | --- | --- | --- |
 | `searxng_config` | `/etc/searxng` | `settings.yml` and any other instance config. |
 | `searxng_cache` | `/var/cache/searxng` | SearXNG's on-disk cache. |
-| `searxng_valkey_data` | `/data` (valkey) | Valkey persistence (`--save 30 1` snapshots). |
+| `searxng_valkey_data` | `/data` (valkey) | Unused — RDB snapshots are disabled (`--save ""`); the volume is kept only so enabling persistence later needs no stack edit. |
 
 The SearXNG entrypoint runs as root and fixes volume ownership itself on every start
 (`chown -R searxng:searxng`), so no host-side permission setup is needed.
@@ -68,6 +68,33 @@ docker restart searxng
 The Valkey connection is already wired up via `SEARXNG_VALKEY_URL=valkey://valkey:6379/0`,
 so the built-in limiter works out of the box.
 
+### Enabling the JSON API
+
+The generated `settings.yml` ships `formats: [html]`, and there is **no environment
+variable for it** — a `format=json` request returns `403` until the file is edited in the
+volume. Any API consumer (LLM integrations, MCP servers, scripts) needs this:
+
+```sh
+docker exec -it searxng sh -c 'vi /etc/searxng/settings.yml'
+```
+
+```yaml
+search:
+  formats:
+    - html
+    - json
+```
+
+```sh
+docker restart searxng
+curl "http://192.168.200.14:8888/search?q=test&format=json"
+```
+
+JSON back means it took. Still HTML or a `403` means the edit did not apply — and note
+that this is separate from the limiter: a client can clear this step and still be
+throttled if its source address is not in `pass_ip` (see
+[Limiter / bot protection](#limiter--bot-protection)).
+
 ## Limiter / bot protection
 
 The limiter is force-enabled via `SEARXNG_LIMITER=true` in the compose file (environment
@@ -75,11 +102,21 @@ variables override `settings.yml`), and its tuning lives in [limiter.toml](limit
 What it's tuned for:
 
 - **Trusted LAN** — `pass_ip = ['192.168.200.0/24']` gives LAN clients unrestricted
-  access, including the JSON API (relevant for LLM/search integrations that would
-  otherwise be classified as bots).
-- **Strict for everyone else** — `link_token = true` requires clients to fetch a
-  CSS-delivered token before `/search` is accepted, which blocks simple scripted
-  scrapers. Token bookkeeping uses Valkey, which this stack already provides.
+  access, including the JSON API.
+- **Trusted containers** — `pass_ip` also lists `172.28.0.0/24`, the pinned
+  `searxng_net` subnet. This entry is **required for any containerised API consumer**
+  (LLM/search integrations, MCP servers). The limiter matches `request.remote_addr`,
+  and a container's peer address is always a Docker-internal address — never
+  `192.168.200.x` — whether it reaches SearXNG through the published host port or over
+  a shared network. Without it such a client is capped at `API_MAX` = 4 requests/hour
+  and, because `link_token` marks every non-browser client suspicious, is
+  302-redirected to the index page after `SUSPICIOUS_IP_MAX` = 3 requests per 30 days.
+  The symptom is HTML arriving where JSON was requested, not a clean error.
+- **Strict for everyone else** — `link_token = true` marks any client that never
+  fetches the CSS-delivered token as *suspicious*, collapsing its allowance to 2
+  requests per 20 s and 10 per 10 min, then blocking it after 3 requests in a 30-day
+  window. That stops simple scripted scrapers. Token bookkeeping uses Valkey, which
+  this stack already provides.
 - **No public-instance passlist** — `pass_searxng_org = false`; the `check.searx.space`
   checker IPs have no business on a private instance.
 - **No trusted proxies yet** — port 8888 is published directly, so only loopback is in
@@ -114,7 +151,12 @@ Matching the other stacks in this repo, both containers run with:
   `searxng` (uid 977) and then writes `settings.yml` into that searxng-owned directory;
   `SETGID`/`SETUID`/`DAC_OVERRIDE` for Valkey)
 - `no-new-privileges`
-- memory limits (1 GB SearXNG, 256 MB Valkey) and reservations
+- memory limits (1 GB SearXNG, 256 MB Valkey) and reservations — Valkey additionally
+  runs with `--maxmemory 192mb --maxmemory-policy allkeys-lru` so it evicts under
+  pressure instead of being OOM-killed, and with `--save ""` so no snapshot fork can
+  spike memory inside the 256 MB cap
+- a digest-pinned SearXNG image; upstream publishes several dated builds a day, so
+  `latest` would move on every redeploy
 - healthchecks (`/healthz` for SearXNG, `valkey-cli ping` for Valkey)
 - json-file logging capped at 3 × 10 MB per container
 
