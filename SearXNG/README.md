@@ -16,6 +16,43 @@ Privacy-respecting metasearch engine, deployed as a two-service Portainer stack:
 SearXNG waits for Valkey's healthcheck to pass before starting
 (`depends_on: condition: service_healthy`).
 
+```mermaid
+flowchart TB
+
+    %% ---------------- WHO TALKS TO IT ----------------
+    subgraph CLIENTS["💻 CLIENTS"]
+        direction LR
+        BROWSER["🌐 browser on the LAN<br/>192.168.200.0/24"]
+        APICLI["🤖 API consumer<br/>MCP server · LLM integration<br/>reaches it from 172.28.0.0/24"]
+    end
+
+    %% ---------------- THE STACK ----------------
+    subgraph HOST["🖥️ DOCKER HOST · 192.168.200.14"]
+        direction TB
+        subgraph NET["🔗 searxng_net · bridge · 172.28.0.0/24"]
+            direction TB
+            SX["🔎 searxng<br/>container 8080<br/>published 192.168.200.14:8888"]
+            VK["🗝️ valkey · 6379<br/>never published<br/>limiter counters + link tokens<br/>maxmemory 192mb · no snapshots"]
+            SX <-->|"SEARXNG_VALKEY_URL"| VK
+        end
+        CFG[("📁 searxng_config<br/>settings.yml · limiter.toml")]
+        CACHE[("📁 searxng_cache")]
+        CFG ==>|"read at start"| SX
+        CACHE --> SX
+    end
+
+    ENGINES["🌍 200+ upstream engines"]
+
+    BROWSER ==>|":8888 · HTML UI"| SX
+    APICLI ==>|"/search?format=json"| SX
+    SX ==> ENGINES
+```
+
+Both volumes are Docker-managed, so nothing needs pre-creating on the host —
+but note that `limiter.toml` lives inside `searxng_config` and has to be copied
+in, which is why it is a deploy step rather than a bind mount. The subnet on
+`searxng_net` is pinned deliberately; the limiter passlist names it.
+
 ## Deploy as a Portainer stack
 
 1. **Stacks → Add stack**, name it `searxng`.
@@ -99,6 +136,48 @@ throttled if its source address is not in `pass_ip` (see
 
 The limiter is force-enabled via `SEARXNG_LIMITER=true` in the compose file (environment
 variables override `settings.yml`), and its tuning lives in [limiter.toml](limiter.toml).
+
+Every `/search` request runs this gauntlet. `pass_ip` is the only thing that skips
+all of it — which is why the passlist has to name the network an API client actually
+arrives from, not the one you think of it as living on:
+
+```mermaid
+flowchart TB
+
+    REQ["🌐 GET /search?format=json"]
+    PASS{"source IP in pass_ip?"}
+    FREE["✅ unrestricted<br/>every check below is skipped"]
+    BLOCK{"source IP in block_ip?"}
+    HDRS{"browser-shaped headers?<br/>User-Agent · Accept<br/>Accept-Language · Accept-Encoding"}
+    APIQ{"format is not html, and<br/>over API_MAX = 4 this hour?"}
+    SUSP{"link_token: has this client<br/>ever fetched the CSS token?"}
+    SUSPQ{"over SUSPICIOUS_IP_MAX = 3<br/>in the last 30 days?"}
+    RATE{"over 2 per 20s<br/>or 10 per 10 min?"}
+    OK["✅ search runs"]
+
+    REQ ==> PASS
+    PASS ==>|yes| FREE
+    PASS -->|no| BLOCK
+    BLOCK -.->|yes| E1["❌ 429 · on the blocklist"]
+    BLOCK -->|no| HDRS
+    HDRS -.->|no| E2["❌ 429 · bot detected"]
+    HDRS -->|yes| APIQ
+    APIQ -.->|yes| E3["❌ 429 · too many API requests"]
+    APIQ -->|no| SUSP
+    SUSP -->|"yes · a real browser"| OK
+    SUSP -->|"no · any API client"| SUSPQ
+    SUSPQ -.->|yes| E4["↩️ 302 to the index page<br/>HTML arrives where you asked for JSON"]
+    SUSPQ -->|no| RATE
+    RATE -.->|yes| E5["❌ 429 · suspicious rate exceeded"]
+    RATE -->|no| OK
+```
+
+Follow the right-hand branch and the reason API consumers need the passlist becomes
+concrete: a non-browser client can never fetch the CSS token, so it is permanently
+*suspicious*, and three requests in **thirty days** exhausts it. The failure is a 302,
+not an error — so the caller sees a page of HTML rather than anything that reads
+like a rate limit.
+
 What it's tuned for:
 
 - **Trusted LAN** — `pass_ip = ['192.168.200.0/24']` gives LAN clients unrestricted
