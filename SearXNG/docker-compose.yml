@@ -1,11 +1,16 @@
 services:
   searxng:
-    image: searxng/searxng:latest
+    # Pinned: upstream publishes ~3 dated builds a day, so `latest` moves under
+    # you on every redeploy. Re-resolve with:
+    #   docker buildx imagetools inspect searxng/searxng:<tag>
+    image: searxng/searxng:2026.9.3-a1144dda3@sha256:3602e6ddbeba037f5d800d1ed9d296a8b93c9f5b3cf9d05fa179d0e766dd59a1
     container_name: searxng
     restart: unless-stopped
 
     ports:
-      - "8888:8080"
+      # Bound to one LAN address rather than every host interface, matching
+      # the other stacks in this repo.
+      - "192.168.200.14:8888:8080"
 
     volumes:
       - searxng_config:/etc/searxng:rw
@@ -60,7 +65,15 @@ services:
     container_name: searxng-valkey
     restart: unless-stopped
 
-    command: valkey-server --save 30 1 --loglevel warning
+    # --save "": this holds limiter counters and cache, all reconstructible.
+    # RDB snapshots fork the process, and the copy-on-write spike inside the
+    # 256m cap is the classic way this container gets OOM-killed.
+    # --maxmemory: valkey cannot see mem_limit, so without it the dataset
+    # grows until the kernel kills the container instead of evicting.
+    command: >
+      valkey-server --save "" --appendonly no
+      --maxmemory 192mb --maxmemory-policy allkeys-lru
+      --loglevel warning
 
     volumes:
       - searxng_valkey_data:/data
@@ -105,3 +118,9 @@ volumes:
 networks:
   searxng_net:
     driver: bridge
+    # Fixed subnet so limiter.toml's pass_ip can name it exactly. Without a
+    # pinned subnet Docker allocates from 172.16/12 arbitrarily and the
+    # passlist entry would have to blanket-trust the whole range.
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
