@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+#
+# setup-claude-discovery.sh - provision a locked-down, READ-ONLY discovery
+# account on a backup-relevant host.
+#
+# Creates a `claude` account whose SSH key can do exactly one thing: run
+# /usr/local/sbin/claude-discovery with one of a fixed set of verbs, as root,
+# and print the result. It cannot get a shell, cannot pass arbitrary arguments,
+# cannot forward ports, and cannot modify any of the files that constrain it.
+#
+# It deliberately does NOT grant:
+#   - docker group membership (that is root-equivalent: docker run -v /:/host)
+#   - sudo to any general-purpose binary (sudo find/awk/less are all root)
+#   - any write, delete, prune, mount, or restart capability
+#
+# Mutations are intentionally out of scope. Those keep going through your own
+# account, where they prompt.
+#
+# Usage (as root, on each host):
+#   ./setup-claude-discovery.sh --pubkey ~/claude_discovery.pub
+#   ./setup-claude-discovery.sh --pubkey ~/claude_discovery.pub --repos "/mnt/backups/borgrepo /mnt/borg_smiddleware"
+#   ./setup-claude-discovery.sh --uninstall
+#
+# Generate the keypair on your workstation first (NOT here):
+#   ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_claude_discovery -N "" -C "claude-discovery"
+#
+# Licensed under the MIT License. Provided "as is" without warranty.
+
+set -Eeuo pipefail
+
+# ---- single source of truth for the verb vocabulary -----------------------
+# Both the dispatcher's allowlist and the sudoers entries are generated from
+# this array, so the two can never drift apart.
+VERBS=(host snapshot docker compose repo trigger all)
+
+USER_NAME="claude"
+HOME_DIR="/home/${USER_NAME}"
+# Written into the account's GECOS field at creation and required by --uninstall,
+# so uninstall can never delete a human's account that happens to share the name.
+GECOS="read-only backup discovery"
+PROBE="/usr/local/sbin/claude-discovery"
+DISPATCH="/usr/local/sbin/claude-discovery-dispatch"
+SUDOERS="/etc/sudoers.d/claude-discovery"
+CONF="/etc/claude-discovery.conf"
+
+PUBKEY_FILE=""
+REPOS=""
+ACTION="install"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pubkey)    PUBKEY_FILE="${2:?--pubkey requires a path}"; shift 2 ;;
+    --repos)     REPOS="${2:?--repos requires a space-separated list}"; shift 2 ;;
+    --uninstall) ACTION="uninstall"; shift ;;
+    -h|--help)   sed -n '2,32p' "$0"; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
+[ "$(id -u)" -eq 0 ] || { echo "ERROR: run as root." >&2; exit 1; }
+
+# --------------------------------------------------------------------------
+if [ "$ACTION" = uninstall ]; then
+  echo "==> Removing claude discovery access"
+  rm -f "$SUDOERS" "$DISPATCH" "$PROBE" "$CONF"
+  echo "    removed probe, dispatcher, sudoers, conf"
+
+  if id "$USER_NAME" >/dev/null 2>&1; then
+    # Never userdel -r an account this script did not create. If a human named
+    # `claude` exists on this host, deleting their home would be unrecoverable.
+    found_gecos="$(getent passwd "$USER_NAME" | cut -d: -f5)"
+    if [ "$found_gecos" = "$GECOS" ]; then
+      userdel -r "$USER_NAME"
+      echo "    removed user ${USER_NAME} and its home"
+    else
+      echo "    !! REFUSING to delete user '${USER_NAME}': not created by this script."
+      echo "       expected GECOS: '${GECOS}'"
+      echo "       found GECOS:    '${found_gecos}'"
+      echo "       Its privileges are already revoked (sudoers and key removed)."
+      echo "       Delete the account by hand if you are certain."
+      exit 3
+    fi
+  else
+    echo "    user ${USER_NAME} does not exist"
+  fi
+  visudo -c >/dev/null && echo "    sudoers still valid"
+  echo "Done. No trace of the discovery account remains."
+  exit 0
+fi
+
+[ -n "$PUBKEY_FILE" ] || { echo "ERROR: --pubkey is required. Generate one on your workstation first." >&2; exit 1; }
+[ -r "$PUBKEY_FILE" ] || { echo "ERROR: cannot read $PUBKEY_FILE" >&2; exit 1; }
+if grep -q 'PRIVATE KEY' "$PUBKEY_FILE"; then
+  echo "ERROR: that is a PRIVATE key. Pass the .pub file." >&2; exit 1
+fi
+key_count="$(grep -cE '^(ssh-ed25519|ssh-rsa|ecdsa-)' "$PUBKEY_FILE" || true)"
+if [ "$key_count" -eq 0 ]; then
+  echo "ERROR: $PUBKEY_FILE contains no SSH public key." >&2; exit 1
+elif [ "$key_count" -gt 1 ]; then
+  # Installing only the first would silently authorize a different key than expected.
+  echo "ERROR: $PUBKEY_FILE contains ${key_count} keys. Pass a file with exactly one." >&2; exit 1
+fi
+PUBKEY_LINE="$(grep -E '^(ssh-ed25519|ssh-rsa|ecdsa-)' "$PUBKEY_FILE")"
+
+SRC_PROBE="$(dirname "$(readlink -f "$0")")/claude-discovery"
+[ -r "$SRC_PROBE" ] || { echo "ERROR: claude-discovery not found next to this script." >&2; exit 1; }
+
+echo "==> Installing read-only discovery probe"
+install -o root -g root -m 0755 "$SRC_PROBE" "$PROBE"
+echo "    $PROBE (root:root 0755 - not writable by ${USER_NAME})"
+
+if [ -n "$REPOS" ]; then
+  # The probe sources this file as root, so every element is quoted rather than
+  # interpolated raw - an unquoted path containing a backtick would execute.
+  {
+    echo "# GENERATED by setup-claude-discovery.sh"
+    printf 'BORG_REPOS=('
+    for r in $REPOS; do printf '%q ' "$r"; done
+    printf ')\n'
+  } > "$CONF"
+  chown root:root "$CONF"; chmod 0644 "$CONF"
+  echo "    $CONF -> $(grep BORG_REPOS "$CONF")"
+fi
+
+echo "==> Generating dispatcher (verb allowlist baked in)"
+{
+  echo '#!/usr/bin/env bash'
+  echo '# GENERATED by setup-claude-discovery.sh - do not edit by hand.'
+  echo '# Forced command for the claude account. Validates the requested verb'
+  echo '# against a fixed list, then execs the probe as root. The client-supplied'
+  echo '# string is never interpolated into a command - only compared literally.'
+  echo 'set -uo pipefail'
+  echo 'verb="${SSH_ORIGINAL_COMMAND:-all}"'
+  echo 'case "$verb" in'
+  printf '  %s) ;;\n' "$(IFS='|'; echo "${VERBS[*]}")"
+  echo '  *)'
+  echo '    echo "refused: not an allowed discovery verb" >&2'
+  printf '    echo "allowed: %s" >&2\n' "${VERBS[*]}"
+  echo '    exit 64 ;;'
+  echo 'esac'
+  printf 'exec sudo -n %s "$verb"\n' "$PROBE"
+} > "$DISPATCH"
+chown root:root "$DISPATCH"; chmod 0755 "$DISPATCH"
+bash -n "$DISPATCH" || { echo "ERROR: generated dispatcher has a syntax error." >&2; exit 1; }
+echo "    $DISPATCH (verbs: ${VERBS[*]})"
+
+echo "==> Writing sudoers entry (exact arguments only, no wildcards)"
+{
+  echo "# GENERATED by setup-claude-discovery.sh - do not edit by hand."
+  echo "# Each entry pins one exact argument. No ALL, no wildcards, no shell."
+  printf 'Cmnd_Alias CLAUDE_DISCOVERY = %s\n' \
+    "$(for v in "${VERBS[@]}"; do printf '%s %s, ' "$PROBE" "$v"; done | sed 's/, $//')"
+  echo "${USER_NAME} ALL=(root) NOPASSWD: CLAUDE_DISCOVERY"
+  echo "Defaults:${USER_NAME} !requiretty"
+} > "${SUDOERS}.tmp"
+chmod 0440 "${SUDOERS}.tmp"
+visudo -cf "${SUDOERS}.tmp" || { rm -f "${SUDOERS}.tmp"; echo "ERROR: sudoers syntax invalid, nothing installed." >&2; exit 1; }
+mv "${SUDOERS}.tmp" "$SUDOERS"
+chown root:root "$SUDOERS"
+echo "    $SUDOERS validated and installed"
+
+echo "==> Creating ${USER_NAME} account"
+if id "$USER_NAME" >/dev/null 2>&1; then
+  echo "    user already exists, leaving it alone"
+else
+  # --no-create-home on purpose: the home is built below as a root-owned tree,
+  # so the account cannot alter the files that constrain it. Letting useradd
+  # populate it with claude-owned skel files would defeat that.
+  useradd --system --no-create-home --home-dir "$HOME_DIR" --shell /bin/bash \
+          --comment "$GECOS" "$USER_NAME"
+  echo "    created (system account, no password set -> no password login)"
+fi
+passwd -l "$USER_NAME" >/dev/null
+echo "    password login locked"
+
+# Deliberately NOT: usermod -aG docker claude   <- that would be root.
+if id -nG "$USER_NAME" | grep -qwE 'docker|sudo|adm|root'; then
+  echo "    !! WARNING: ${USER_NAME} is in a privileged group - that defeats the sandbox:"
+  id -nG "$USER_NAME"
+fi
+
+echo "==> Installing forced-command SSH key"
+install -d -o root -g root -m 0755 "$HOME_DIR"
+install -d -o root -g root -m 0755 "${HOME_DIR}/.ssh"
+{
+  echo "# GENERATED by setup-claude-discovery.sh"
+  printf 'command="%s",restrict %s\n' "$DISPATCH" "$PUBKEY_LINE"
+} > "${HOME_DIR}/.ssh/authorized_keys"
+# Root-owned on purpose: the account must not be able to remove its own
+# forced-command restriction. sshd StrictModes accepts root-owned keys.
+chown root:root "${HOME_DIR}/.ssh/authorized_keys"
+chmod 0644 "${HOME_DIR}/.ssh/authorized_keys"
+echo "    ${HOME_DIR}/.ssh/authorized_keys (root-owned; ${USER_NAME} cannot alter its own restrictions)"
+echo "    restrict = no port/agent/X11 forwarding, no PTY, no user-rc"
+
+echo "==> Self-test"
+# stderr is shown deliberately. Swallowing it is exactly the failure mode this
+# whole audit exists to find.
+if selftest_out="$(sudo -n -u "$USER_NAME" sudo -n "$PROBE" host 2>&1)"; then
+  echo "    OK: ${USER_NAME} can run the probe as root without a password"
+else
+  echo "    !! Self-test FAILED (exit $?). Output was:"
+  printf '%s\n' "$selftest_out" | sed 's/^/       /'
+fi
+
+cat <<EOF
+
+==========================================================================
+Done on $(hostname).
+
+The ${USER_NAME} account can now run exactly these, as root, and nothing else:
+$(for v in "${VERBS[@]}"; do echo "    ${PROBE} ${v}"; done)
+
+Verify from your workstation:
+    ssh -i ~/.ssh/id_ed25519_claude_discovery ${USER_NAME}@$(hostname -I 2>/dev/null | awk '{print $1}') all
+
+Confirm it is actually locked down (all three should be refused):
+    ssh -i ~/.ssh/id_ed25519_claude_discovery ${USER_NAME}@HOST 'id'
+    ssh -i ~/.ssh/id_ed25519_claude_discovery ${USER_NAME}@HOST 'repo; rm -rf /'
+    ssh -i ~/.ssh/id_ed25519_claude_discovery ${USER_NAME}@HOST -t 'bash'
+
+Remove everything later with:
+    ./setup-claude-discovery.sh --uninstall
+==========================================================================
+EOF

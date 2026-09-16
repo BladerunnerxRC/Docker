@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+#
+# claude-discovery - READ-ONLY backup/DR discovery probe.
+#
+# Runs as root (via a narrow sudoers entry) and prints inventory to stdout.
+# It never writes, deletes, prunes, mounts, or restarts anything. The only
+# filesystem writes it is capable of are none: every command below is a read.
+#
+# Invoked by claude-discovery-dispatch, which is pinned as the forced command
+# on the `claude` account's SSH key. Takes exactly one verb argument.
+#
+# Deploy: /usr/local/sbin/claude-discovery, owned root:root, mode 0755.
+#         It MUST NOT be writable by the claude user, or the forced-command
+#         restriction is worthless.
+#
+# Licensed under the MIT License. Provided "as is" without warranty.
+
+set -uo pipefail
+
+# Deliberately NOT using 2>/dev/null anywhere. Hiding stderr is how a failed
+# probe becomes indistinguishable from an absent one - the same bug this whole
+# audit exists to find in the prep scripts.
+
+BORG_REPOS=(/mnt/backups/borgrepo /mnt/borg_smiddleware)
+SNAPSHOT_BASE=/var/backups/borg-apps
+COMPOSE_STORE=/data/compose
+
+[ -r /etc/claude-discovery.conf ] && . /etc/claude-discovery.conf
+
+h1() { printf '\n########## %s ##########\n' "$1"; }
+h2() { printf '\n--- %s ---\n' "$1"; }
+
+probe_host() {
+  h1 "HOST"
+  h2 "identity"
+  hostname -f || hostname
+  [ -r /etc/os-release ] && ( . /etc/os-release; echo "$PRETTY_NAME" )
+  uname -r
+  uptime
+
+  h2 "block devices and filesystems"
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
+  echo
+  df -hT -x tmpfs -x devtmpfs -x overlay
+
+  h2 "memory"
+  free -h
+
+  h2 "network mounts (NFS/CIFS - relevant to whether backups leave this box)"
+  findmnt -t nfs,nfs4,cifs,smb3 -o SOURCE,FSTYPE,TARGET,OPTIONS || echo "(none)"
+}
+
+probe_snapshot() {
+  h1 "APP-DATA SNAPSHOT ($SNAPSHOT_BASE)"
+  if [ ! -d "$SNAPSHOT_BASE" ]; then
+    echo ">>> $SNAPSHOT_BASE DOES NOT EXIST - prep script has never run here <<<"
+    return 0
+  fi
+
+  h2 "freshness"
+  ls -ld "$SNAPSHOT_BASE" "$SNAPSHOT_BASE"/latest "$SNAPSHOT_BASE"/previous
+  if [ -d "$SNAPSHOT_BASE/latest" ]; then
+    mtime=$(stat -c %Y "$SNAPSHOT_BASE/latest") || mtime=""
+    if [ -n "$mtime" ]; then
+      age_h=$(( ( $(date +%s) - mtime ) / 3600 ))
+      echo "latest age: ${age_h} hours"
+      [ "$age_h" -gt 48 ] && echo ">>> STALE: nothing has refreshed this in over 2 days <<<"
+    else
+      echo "(could not stat latest/ - see error above)"
+    fi
+  fi
+
+  h2 "size and tree"
+  du -sh "$SNAPSHOT_BASE"/latest
+  find "$SNAPSHOT_BASE"/latest -maxdepth 2 -mindepth 1 -printf '%y %10s %p\n' | sort -k3
+
+  h2 "database dumps - size and completion markers"
+  # A failed pg_dumpall still creates the file (the redirect runs before exec),
+  # so size and a trailing completion marker are the only real evidence.
+  if [ -d "$SNAPSHOT_BASE/latest/databases" ]; then
+    ls -la "$SNAPSHOT_BASE/latest/databases/"
+    for f in "$SNAPSHOT_BASE"/latest/databases/*; do
+      [ -f "$f" ] || continue
+      sz=$(stat -c %s "$f")
+      printf '\n%s  (%s bytes)\n' "$(basename "$f")" "$sz"
+      if [ "$sz" -lt 512 ]; then
+        echo "  >>> SUSPICIOUS: too small to be a real dump <<<"
+      fi
+      case "$f" in
+        *.sql)
+          if grep -qE 'PostgreSQL database dump complete|-- Dump completed' "$f"; then
+            echo "  OK: completion marker present"
+          else
+            echo "  >>> NO COMPLETION MARKER - dump may be truncated <<<"
+          fi
+          grep -cE '^CREATE (ROLE|DATABASE)' "$f" | sed 's/^/  CREATE ROLE\/DATABASE lines: /'
+          ;;
+        *.sqlite-backup)
+          if command -v sqlite3 >/dev/null; then
+            echo -n "  integrity: "; sqlite3 "$f" "PRAGMA integrity_check;" || echo "(check failed)"
+          fi
+          ;;
+      esac
+    done
+  else
+    echo "(no databases/ directory in the snapshot)"
+  fi
+
+  h2 "completion marker (does the prep script record success at all?)"
+  ls -la "$SNAPSHOT_BASE"/latest/metadata/ 2>&1 || true
+  if [ -f "$SNAPSHOT_BASE/latest/metadata/SNAPSHOT-COMPLETE" ]; then
+    cat "$SNAPSHOT_BASE/latest/metadata/SNAPSHOT-COMPLETE"
+  else
+    echo ">>> no SNAPSHOT-COMPLETE marker - a partial run is indistinguishable from a good one <<<"
+  fi
+}
+
+probe_docker() {
+  h1 "DOCKER"
+  if ! command -v docker >/dev/null; then echo "docker not installed"; return 0; fi
+
+  h2 "running containers"
+  docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}'
+
+  h2 "all containers (including stopped)"
+  docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}'
+
+  h2 "compose project each container came from"
+  for c in $(docker ps -a --format '{{.Names}}'); do
+    printf '%-24s %s | %s\n' "$c" \
+      "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$c")" \
+      "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$c")"
+  done
+
+  h2 "bind mounts (host paths holding app state)"
+  for c in $(docker ps -a --format '{{.Names}}'); do
+    docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}
+{{end}}{{end}}' "$c"
+  done | grep -v '^$' | sort -u
+
+  h2 "named volumes in use"
+  for c in $(docker ps -a --format '{{.Names}}'); do
+    docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}
+{{end}}{{end}}' "$c"
+  done | grep -v '^$' | sort -u
+
+  h2 "all named volumes on host (orphans included)"
+  docker volume ls
+
+  h2 "database containers vs dumps present"
+  echo "DB-like containers running:"
+  docker ps --format '{{.Names}}\t{{.Image}}' \
+    | grep -Ei 'postgres|mysql|maria|mongo|redis|valkey|influx|elastic|clickhouse' \
+    || echo "  (none)"
+  echo "Dumps in the snapshot:"
+  ls -1 "$SNAPSHOT_BASE"/latest/databases/ 2>&1 | sed 's/^/  /' || true
+  echo ">>> every DB container above needs a matching dump, or it is not recoverable <<<"
+
+  h2 "image digests (what a rebuild would need to pull)"
+  docker images --digests --format '{{.Repository}}:{{.Tag}}\t{{.Digest}}'
+}
+
+probe_compose() {
+  h1 "COMPOSE / PORTAINER STACK STORE ($COMPOSE_STORE)"
+  if [ ! -d "$COMPOSE_STORE" ]; then
+    echo "$COMPOSE_STORE does not exist on this host."
+    echo "(If containers here report a working_dir under it, the stack definitions"
+    echo " live on the Portainer SERVER, not on this node.)"
+    return 0
+  fi
+  h2 "stack projects present"
+  ls -la "$COMPOSE_STORE"/
+  h2 "compose files found"
+  find "$COMPOSE_STORE" -maxdepth 4 \( -name '*.yml' -o -name '*.yaml' -o -name '*.env' -o -name '.env' \) \
+    -printf '%M %10s %TY-%Tm-%Td %p\n' | sort -k5
+  h2 "total size"
+  du -sh "$COMPOSE_STORE"
+}
+
+probe_repo() {
+  h1 "BORG REPOSITORIES"
+  for r in "${BORG_REPOS[@]}"; do
+    h2 "repo: $r"
+    if [ ! -d "$r" ]; then echo "does not exist on this host"; continue; fi
+
+    echo "# backing store - is this the same box we are protecting?"
+    findmnt -no SOURCE,FSTYPE,TARGET --target "$r" \
+      || echo "NO SEPARATE MOUNT -> repo is on this host's own root filesystem"
+    df -hT "$r"
+
+    echo
+    echo "# encryption / append-only"
+    if [ -f "$r/config" ]; then
+      grep -E '^(append_only|version|segments_per_dir|max_segment_size|storage_quota)' "$r/config" \
+        || echo "(no matching keys)"
+      if grep -q '^key = ' "$r/config"; then
+        echo "key_type: repokey (encrypted; key blob stored in repo config, not shown)"
+      else
+        echo ">>> no 'key =' line in config - repo may be UNENCRYPTED (verify with borg info) <<<"
+      fi
+    else
+      echo "no config file - not a borg repo root?"
+    fi
+
+    echo
+    echo "# size and archive count"
+    du -sh "$r"
+    if [ -d "$r/data" ]; then
+      echo -n "segment dirs: "; find "$r/data" -maxdepth 1 -mindepth 1 -type d | wc -l
+    fi
+    ls -la "$r" | head -20
+
+    echo
+    echo "# last modification (proxy for last successful write)"
+    stat -c '%y  %n' "$r" "$r/config" 2>&1
+    find "$r" -maxdepth 2 -name 'index.*' -printf '%TY-%Tm-%Td %TH:%TM  %p\n' 2>&1 | tail -5
+  done
+
+  h2 "borg CLI availability"
+  if command -v borg >/dev/null; then
+    borg --version
+    echo "(run 'borg info <repo>' manually for authoritative encryption/archive detail)"
+  else
+    echo "borg CLI not installed on the host - it lives inside the borg-backup container."
+    echo "Equivalent from the host:  docker exec borg-backup borg info --bypass-lock /local/shared"
+  fi
+
+  h2 "borg-ui config export (recovery of the recovery tool)"
+  ls -la /srv/borg-ui-config-export/latest/ 2>&1 || echo "(no export dir)"
+  if [ -s /srv/borg-ui-config-export/latest/.secret_key ]; then
+    echo "OK: .secret_key present and non-empty"
+  else
+    echo ">>> .secret_key missing/empty - the exported borg-ui DB may be undecryptable <<<"
+  fi
+}
+
+probe_trigger() {
+  h1 "PREP SCRIPT INSTALL AND TRIGGER STATE"
+  h2 "installed prep scripts"
+  ls -la /usr/local/sbin/borg-prep-appdata-* 2>&1 || echo ">>> NONE INSTALLED <<<"
+
+  h2 "root crontab"
+  crontab -l 2>&1 | grep -iE 'borg|backup' || echo "(no borg/backup entry)"
+
+  h2 "system cron dirs"
+  grep -rliE 'borg' /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/crontab 2>&1 || echo "(no matches)"
+
+  h2 "systemd timers"
+  systemctl list-timers --all --no-pager | grep -iE 'borg|backup' || echo "(no borg/backup timer)"
+
+  h2 "recent auth activity for backup automation (who triggers this host)"
+  grep -hiE 'Accepted .* for (root|claude|borg)' /var/log/auth.log 2>&1 | tail -10 || echo "(auth.log unreadable or absent)"
+}
+
+probe_all() {
+  probe_host; probe_snapshot; probe_docker; probe_compose; probe_repo; probe_trigger
+}
+
+case "${1:-}" in
+  host)     probe_host ;;
+  snapshot) probe_snapshot ;;
+  docker)   probe_docker ;;
+  compose)  probe_compose ;;
+  repo)     probe_repo ;;
+  trigger)  probe_trigger ;;
+  all)      probe_all ;;
+  *)
+    echo "usage: claude-discovery {host|snapshot|docker|compose|repo|trigger|all}" >&2
+    exit 64
+    ;;
+esac
+
+printf '\n########## END (%s) ##########\n' "$(date -Is)"
