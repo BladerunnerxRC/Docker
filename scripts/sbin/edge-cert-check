@@ -43,6 +43,8 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 need jq
 need openssl
 need docker
+need timeout
+if [[ -n "$NOTIFY_URL" ]]; then need curl; fi
 [[ -r "$ACME_JSON" ]] || die "cannot read $ACME_JSON (run as root: sudo $0)"
 
 mkdir -p "$LOG_DIR"
@@ -51,8 +53,10 @@ problems=()
 checked=0
 
 # --- 1. Served certs ---------------------------------------------------------
+# main + SANs; wildcards skipped (no concrete SNI to test, and TLS-ALPN can't issue them)
 mapfile -t domains < <(jq -r --arg r "$RESOLVER" \
-  '.[$r].Certificates // [] | .[].domain.main' "$ACME_JSON" | sort -u)
+  '.[$r].Certificates // [] | .[].domain | .main, (.sans // [])[]
+   | select(startswith("*.") | not)' "$ACME_JSON" | sort -u)
 
 [[ ${#domains[@]} -gt 0 ]] || problems+=("no certificates for resolver '$RESOLVER' in $ACME_JSON")
 
@@ -77,8 +81,11 @@ for d in "${domains[@]}"; do
 done
 
 # --- 2. Renewal errors in Traefik logs ---------------------------------------
-mapfile -t failed < <(docker logs --since "$LOG_SINCE" "$TRAEFIK_CONTAINER" 2>&1 \
-  | grep 'Error renewing ACME certificate' \
+# Capture first so a docker failure is a script error, not "no renewal errors"
+logs="$(docker logs --since "$LOG_SINCE" "$TRAEFIK_CONTAINER" 2>&1)" \
+  || die "docker logs $TRAEFIK_CONTAINER failed: ${logs:0:200}"
+
+mapfile -t failed < <(grep 'Error renewing ACME certificate' <<<"$logs" \
   | grep -oE '\{Main:[^ }]+|\{[a-z0-9.-]+ ' | tr -d '{ ' | sed 's/^Main://' | sort -u || true)
 
 for d in "${failed[@]}"; do
@@ -98,9 +105,9 @@ report="$(printf '%s\n' "${problems[@]}")"
   sed 's/^/  /' <<<"$report"
 } | tee -a "$LOG_MAIN"
 
-if [[ -n "$NOTIFY_URL" ]] && command -v curl >/dev/null 2>&1; then
-  curl -fsS -m 15 -H "Title: Cert problems on $(hostname)" -H "Priority: high" \
-    -d "$report" "$NOTIFY_URL" >/dev/null || echo "WARN: notify to $NOTIFY_URL failed" >&2
+if [[ -n "$NOTIFY_URL" ]]; then
+  curl -fs -m 15 -H "Title: Cert problems on $(hostname)" -H "Priority: high" \
+    -d "$report" "$NOTIFY_URL" >/dev/null || echo "WARN: notification failed (check NOTIFY_URL)" >&2
 fi
 
 exit 1
