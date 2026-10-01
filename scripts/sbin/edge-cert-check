@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# edge-cert-check
+#
+# Daily safety net for step-ca certs issued through Traefik's ACME resolver.
+#
+# Checks:
+#   - Every domain in acme.json: cert actually served by Traefik (SNI against
+#     127.0.0.1, so DNS problems don't hide it) must
+#       * be issued by the step-ca intermediate (catches default-cert fallback)
+#       * have more than WARN_DAYS left
+#   - Traefik logs for the last LOG_SINCE: any "Error renewing ACME certificate"
+#
+# Output:
+#   One line per problem; "OK: ..." summary when clean.
+#   Exit 0 = clean, 1 = problems found, 2 = script/dependency error.
+# Logging:
+#   - Main log: /var/log/edge-sync/edge-cert-check.log
+# Alerting (optional):
+#   NOTIFY_URL set -> POST the report there (ntfy/Gotify-style plain-text body)
+#
+# Cron (root), daily:
+#   15 7 * * * /usr/local/sbin/edge-cert-check >/dev/null 2>&1
+# -----------------------------------------------------------------------------
+
+ACME_JSON="${ACME_JSON:-/opt/netlab-stack/traefik/acme/acme.json}"
+RESOLVER="${RESOLVER:-stepca}"
+TRAEFIK_CONTAINER="${TRAEFIK_CONTAINER:-traefik}"
+TRAEFIK_HOST="${TRAEFIK_HOST:-127.0.0.1}"
+EXPECTED_ISSUER="${EXPECTED_ISSUER:-SHOME LAN CA}"
+WARN_DAYS="${WARN_DAYS:-7}"
+LOG_SINCE="${LOG_SINCE:-25h}"
+NOTIFY_URL="${NOTIFY_URL:-}"
+
+LOG_DIR="/var/log/edge-sync"
+LOG_MAIN="${LOG_DIR}/edge-cert-check.log"
+
+die()  { echo "ERROR: $*" >&2; exit 2; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+
+need jq
+need openssl
+need docker
+need timeout
+if [[ -n "$NOTIFY_URL" ]]; then need curl; fi
+[[ -r "$ACME_JSON" ]] || die "cannot read $ACME_JSON (run as root: sudo $0)"
+
+mkdir -p "$LOG_DIR"
+
+problems=()
+checked=0
+
+# --- 1. Served certs ---------------------------------------------------------
+# main + SANs; wildcards skipped (no concrete SNI to test, and TLS-ALPN can't issue them)
+mapfile -t domains < <(jq -r --arg r "$RESOLVER" \
+  '.[$r].Certificates // [] | .[].domain | .main, (.sans // [])[]
+   | select(startswith("*.") | not)' "$ACME_JSON" | sort -u)
+
+[[ ${#domains[@]} -gt 0 ]] || problems+=("no certificates for resolver '$RESOLVER' in $ACME_JSON")
+
+for d in "${domains[@]}"; do
+  checked=$((checked + 1))
+  pem="$(echo | timeout 10 openssl s_client -connect "${TRAEFIK_HOST}:443" \
+           -servername "$d" 2>/dev/null | openssl x509 2>/dev/null || true)"
+
+  if [[ -z "$pem" ]]; then
+    problems+=("$d: no certificate served on ${TRAEFIK_HOST}:443")
+    continue
+  fi
+
+  issuer="$(openssl x509 -noout -issuer <<<"$pem")"
+  end="$(openssl x509 -noout -enddate <<<"$pem" | cut -d= -f2)"
+
+  if [[ "$issuer" != *"$EXPECTED_ISSUER"* ]]; then
+    problems+=("$d: wrong issuer (${issuer#issuer=}) - Traefik is serving a fallback cert")
+  elif ! openssl x509 -noout -checkend $((WARN_DAYS * 86400)) <<<"$pem" >/dev/null; then
+    problems+=("$d: expires $end (< ${WARN_DAYS}d)")
+  fi
+done
+
+# --- 2. Renewal errors in Traefik logs ---------------------------------------
+# Capture first so a docker failure is a script error, not "no renewal errors"
+logs="$(docker logs --since "$LOG_SINCE" "$TRAEFIK_CONTAINER" 2>&1)" \
+  || die "docker logs $TRAEFIK_CONTAINER failed: ${logs:0:200}"
+
+mapfile -t failed < <(grep 'Error renewing ACME certificate' <<<"$logs" \
+  | grep -oE '\{Main:[^ }]+|\{[a-z0-9.-]+ ' | tr -d '{ ' | sed 's/^Main://' | sort -u || true)
+
+for d in "${failed[@]}"; do
+  [[ -n "$d" ]] && problems+=("$d: renewal failed in last ${LOG_SINCE} (docker logs $TRAEFIK_CONTAINER | grep $d)")
+done
+
+# --- Report ------------------------------------------------------------------
+ts="$(date '+%F %T')"
+if [[ ${#problems[@]} -eq 0 ]]; then
+  echo "$ts OK: $checked certs checked, none expiring within ${WARN_DAYS}d, no renewal errors" | tee -a "$LOG_MAIN"
+  exit 0
+fi
+
+report="$(printf '%s\n' "${problems[@]}")"
+{
+  echo "$ts PROBLEMS: ${#problems[@]} found ($checked certs checked):"
+  sed 's/^/  /' <<<"$report"
+} | tee -a "$LOG_MAIN"
+
+if [[ -n "$NOTIFY_URL" ]]; then
+  curl -fs -m 15 -H "Title: Cert problems on $(hostname)" -H "Priority: high" \
+    -d "$report" "$NOTIFY_URL" >/dev/null || echo "WARN: notification failed (check NOTIFY_URL)" >&2
+fi
+
+exit 1
