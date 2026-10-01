@@ -1,10 +1,11 @@
 .env
 **/.env
-!stacks/Homepage/stack.env
 secrets/
 **/*secret*
 **/*token*
 **/*password*
 **/acme.json
 **/certs/
-stacks/edge-stack/nocodb/.env
+
+# Claude Code per-machine approvals (absolute local paths) - never commit
+**/.claude/settings.local.json
