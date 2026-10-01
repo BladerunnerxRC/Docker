@@ -80,8 +80,8 @@ Git-backed one in place** — the old stack has to go first, or the new deploy f
 # 1. Baseline, to compare against afterward
 dig +short @192.168.200.52 whoami.shome     # expect 192.168.200.52
 dig +short @192.168.200.52 google.com       # upstream resolution works
-curl -ks https://traefik.shome/api/http/routers | jq 'map(select(.provider=="file"))|length'
-curl -ks https://traefik.shome/api/http/routers | jq 'length'
+curl -ks -u <user> https://traefik.shome/api/http/routers | jq 'map(select(.provider=="file"))|length'
+curl -ks -u <user> https://traefik.shome/api/http/routers | jq 'length'
 
 # 2. Pre-pull so the cutover is not waiting on a download.
 #    Verified 2026-08-14: this tag is NOT yet on the host, so skipping this
@@ -128,8 +128,8 @@ curl -kso /dev/null -w 'dns      -> %{http_code} (expect 302)\n' https://dns.sho
 curl -kso /dev/null -w 'dashboard-> %{http_code} (expect 200)\n' https://traefik.shome/dashboard/
 
 # Router counts must match the baseline table above (13 file, 16 total)
-curl -ks https://traefik.shome/api/http/routers | jq 'map(select(.provider=="file"))|length'
-curl -ks https://traefik.shome/api/http/routers | jq 'length'
+curl -ks -u <user> https://traefik.shome/api/http/routers | jq 'map(select(.provider=="file"))|length'
+curl -ks -u <user> https://traefik.shome/api/http/routers | jq 'length'
 ```
 
 Success = three containers up on the right tags, DNS resolving, **13 file-provider
@@ -153,15 +153,31 @@ removing it is a **behavior change** and should be its own commit.
 
 ## Dashboard authentication
 
-**The Traefik dashboard is protected by IP allowlist only.** Its router middlewares are
-`traefik-ipallow@docker` and nothing else, so anyone on `192.168.200.0/24` **or the whole
-of `192.168.0.0/16`** reaches `/dashboard` and `/api` with no password.
+The dashboard requires **both** an allowed source IP **and** a password. The router chains
+`traefik-ipallow@docker,traefik-auth@docker`, evaluated in that order — off-LAN clients are
+rejected before they see a prompt.
 
-`/opt/netlab-stack/traefik/auth/.htpasswd` exists and is already mounted into the
-container, but nothing references it. `compose.yaml` carries the BasicAuth middleware
-lines commented out — uncomment them and add `traefik-auth@docker` to the router's
-middlewares list to turn it on. Narrowing `TRAEFIK_DASHBOARD_ALLOWLIST` to just
-`192.168.200.0/24` is worth doing regardless.
+Credentials come from `/opt/netlab-stack/traefik/auth/.htpasswd` (bcrypt), mounted
+read-only at `/etc/traefik/.htpasswd`. **That file is host state and is not in this repo,
+so no credentials are committed.** To add or rotate a user:
+
+```bash
+htpasswd -B /opt/netlab-stack/traefik/auth/.htpasswd <user>
+```
+
+Traefik re-reads the file on change — no restart needed.
+
+> **This also covers `/api`, not just `/dashboard`.** Any script, monitor, or homepage
+> widget that polls the Traefik API needs credentials now, or it will get `401`:
+>
+> ```bash
+> curl -ks -u <user> https://traefik.shome/api/http/routers
+> ```
+
+Still worth doing separately: `TRAEFIK_DASHBOARD_ALLOWLIST` defaults to
+`192.168.200.0/24,192.168.0.0/16`. That second CIDR covers 65k addresses across every
+`192.168.x.x` subnet. Narrowing it to just `192.168.200.0/24` is a one-line change, but
+verify nothing legitimately reaches the dashboard from another subnet first.
 
 ## Watchtower
 
