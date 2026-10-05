@@ -1,5 +1,11 @@
 # Manyfold3D Docker Stack
 
+![Docker Compose](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)
+![Manyfold](https://img.shields.io/badge/app-manyfold-F97316)
+![PostgreSQL](https://img.shields.io/badge/db-postgresql-4169E1?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/cache-redis-DC382D?logo=redis&logoColor=white)
+![Port](https://img.shields.io/badge/port-3214-6C757D)
+
 This stack runs Manyfold with PostgreSQL and Redis using Docker Compose.
 
 ## Files
@@ -127,10 +133,12 @@ docker compose ps
 docker compose config
 ```
 
-If startup fails with DB auth errors, verify `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` match the running DB volume data.
+> [!TIP]
+> If startup fails with DB auth errors, verify `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` match the running DB volume data.
 
 ## Security Notes
 
-- `SECRET_KEY_BASE` must be unique and private.
-- Keep `.env` out of source control.
+> [!CAUTION]
+> `SECRET_KEY_BASE` must be unique and private. Keep `.env` out of source control.
+
 - This compose currently publishes `3214` on all interfaces; if fronted by Traefik, consider restricting host exposure.

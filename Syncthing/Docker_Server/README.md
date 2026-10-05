@@ -1,5 +1,9 @@
 # Syncthing
 
+![Syncthing](https://img.shields.io/badge/app-syncthing-0891B2?logo=syncthing&logoColor=white)
+![Docker Compose](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)
+![Status](https://img.shields.io/badge/status-pre--release-F59E0B)
+
 ### Goal
 
 - Set up syncing solution for 3D printing slicers such a Bambu Studio, Orca Slicer, and Prusa Slicer config files.
@@ -26,7 +30,8 @@
 
 
 
-<span style="color:rgba(16,185,129,1)">Code subject to change at any time before release. Execute at your own risk.</span>
+> [!WARNING]
+> Code subject to change at any time before release. Execute at your own risk.
 
 
 
@@ -42,7 +47,9 @@
 
 ### Possible manual edit then sync workflow (recommended)
 
-- **Edit locally on any Windows PC** and **close Bambu Studio** before syncing. **Always close the app** to avoid partial writes and conflicts. **Important.**
+> [!IMPORTANT]
+> **Edit locally on any Windows PC** and **close Bambu Studio** before syncing. **Always close the app** to avoid partial writes and conflicts.
+
 - Configure the Syncthing folder on each Windows PC as **Receive Only** (if you want a single authoritative source) or **Send & Receive** (if any PC can be the source).
 - For **manual control** set **Rescan Interval = 0** and use the **Rescan** button, or **pause/unpause the folder** when you want to sync. You can script pause/resume/rescan via the Syncthing CLI/API for a one‑click workflow.
 
@@ -50,8 +57,10 @@
 
 ### Risks, mitigations, and possible next steps
 
-- **Risk:** Conflicts if two machines edit simultaneously. **Mitigation:** Close Bambu Studio, use Receive Only or manual rescan, enable file versioning.
-- **Risk:** Slow performance with NAS/symlinked configs. **Mitigation:** Keep active configs local; use Syncthing to sync them, then snapshot the Docker node to NAS.
+| | Risk | | Mitigation |
+| --- | --- | --- | --- |
+| ![risk](https://img.shields.io/badge/risk-C9372C?style=flat-square) | Conflicts if two machines edit simultaneously. | ![fix](https://img.shields.io/badge/fix-16A34A?style=flat-square) | Close Bambu Studio, use Receive Only or manual rescan, enable file versioning. |
+| ![risk](https://img.shields.io/badge/risk-C9372C?style=flat-square) | Slow performance with NAS/symlinked configs. | ![fix](https://img.shields.io/badge/fix-16A34A?style=flat-square) | Keep active configs local; use Syncthing to sync them, then snapshot the Docker node to NAS. |
 
 ## Web Links
 

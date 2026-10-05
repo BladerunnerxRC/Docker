@@ -1,5 +1,10 @@
 # Step-CA (Docker Server Install)
 
+![Docker Compose](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)
+![step-ca](https://img.shields.io/badge/app-step--ca-F59E0B)
+![Port](https://img.shields.io/badge/port-9000-6C757D)
+![Scope](https://img.shields.io/badge/scope-LAN%20only-C9372C)
+
 This stack runs [Smallstep Step-CA](https://smallstep.com/docs/step-ca), a private certificate authority (CA) for issuing and managing TLS certificates inside a homelab or internal network.
 
 ## What this application does
@@ -20,7 +25,9 @@ This stack runs [Smallstep Step-CA](https://smallstep.com/docs/step-ca), a priva
 
 - This configuration is intended for LAN/internal use.
 - The container is configured with internal DNS for local name resolution.
-- Avoid exposing this service directly to the public internet without additional hardening.
+
+> [!WARNING]
+> Avoid exposing this service directly to the public internet without additional hardening.
 
 ## References
 

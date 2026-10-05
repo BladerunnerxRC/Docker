@@ -1,5 +1,11 @@
 # Docker
 
+![Docker Compose](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)
+![Portainer](https://img.shields.io/badge/managed%20by-portainer-13BEF9?logo=portainer&logoColor=white)
+![Traefik](https://img.shields.io/badge/proxy-traefik-24A1C1?logo=traefikproxy&logoColor=white)
+![Backups](https://img.shields.io/badge/backups-borg-4C8B2B)
+![Homelab](https://img.shields.io/badge/homelab-self--hosted-6D28D9)
+
 Docker templates and misc self-hosted stack configs.
 
 ## Apps & services

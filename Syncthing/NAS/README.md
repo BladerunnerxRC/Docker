@@ -1,5 +1,11 @@
 # Syncthing
 
+![Syncthing](https://img.shields.io/badge/app-syncthing-0891B2?logo=syncthing&logoColor=white)
+![Synology DSM](https://img.shields.io/badge/host-synology%20dsm-B5B5B6?logo=synology&logoColor=white)
+![Docker Compose](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)
+![Port](https://img.shields.io/badge/web%20ui-8384-6C757D)
+![Status](https://img.shields.io/badge/status-pre--release-F59E0B)
+
 ## Table of contents
 
 - [Synology NAS stack notes](#synology-nas-stack-notes)
@@ -38,8 +44,10 @@ Create these directories on the Synology NAS before deploying the stack:
 
 ### Deployment notes
 
-- Create the folders first in DSM or over SSH before starting the stack.
-- Ensure the container runtime user has read and write access to all three folders.
+> [!IMPORTANT]
+> Create the folders first in DSM or over SSH before starting the stack, and make sure the
+> container runtime user has read and write access to all three folders.
+
 - `network_mode: "host"` is kept in the compose because it is the preferred option for Syncthing LAN discovery and throughput.
 - If host networking is not available in your Synology setup, remove it and expose the required Syncthing ports instead.
 
@@ -88,7 +96,8 @@ Create these directories on the Synology NAS before deploying the stack:
 - [ ] Add a backup routine to a NAS share, either manual or scheduled through host cron or an internal Docker container process.
 - [ ] Migrate to Kubernetes or Docker Swarm.
 
-<span style="color:rgba(16,185,129,1)">Code subject to change at any time before release. Execute at your own risk.</span>
+> [!WARNING]
+> Code subject to change at any time before release. Execute at your own risk.
 
 ## Notes
 
@@ -100,14 +109,18 @@ Create these directories on the Synology NAS before deploying the stack:
 
 ### Possible manual edit then sync workflow (recommended)
 
-- **Edit locally on any Windows PC** and **close Bambu Studio** before syncing. **Always close the app** to avoid partial writes and conflicts. **Important.**
+> [!IMPORTANT]
+> **Edit locally on any Windows PC** and **close Bambu Studio** before syncing. **Always close the app** to avoid partial writes and conflicts.
+
 - Configure the Syncthing folder on each Windows PC as **Receive Only** (if you want a single authoritative source) or **Send & Receive** (if any PC can be the source).
 - For **manual control** set **Rescan Interval = 0** and use the **Rescan** button, or **pause/unpause the folder** when you want to sync. You can script pause/resume/rescan via the Syncthing CLI/API for a one‑click workflow.
 
 ### Risks, mitigations, and possible next steps
 
-- **Risk:** Conflicts if two machines edit simultaneously. **Mitigation:** Close Bambu Studio, use Receive Only or manual rescan, enable file versioning.
-- **Risk:** Slow performance with NAS/symlinked configs. **Mitigation:** Keep active configs local; use Syncthing to sync them, then snapshot the Docker node to NAS.
+| | Risk | | Mitigation |
+| --- | --- | --- | --- |
+| ![risk](https://img.shields.io/badge/risk-C9372C?style=flat-square) | Conflicts if two machines edit simultaneously. | ![fix](https://img.shields.io/badge/fix-16A34A?style=flat-square) | Close Bambu Studio, use Receive Only or manual rescan, enable file versioning. |
+| ![risk](https://img.shields.io/badge/risk-C9372C?style=flat-square) | Slow performance with NAS/symlinked configs. | ![fix](https://img.shields.io/badge/fix-16A34A?style=flat-square) | Keep active configs local; use Syncthing to sync them, then snapshot the Docker node to NAS. |
 
 ## Web Links
 
