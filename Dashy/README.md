@@ -1,5 +1,9 @@
 # Dashy Dashboard
 
+![Docker Compose](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)
+![Dashy](https://img.shields.io/badge/app-dashy-0EA5E9)
+![Port](https://img.shields.io/badge/port-4000-6C757D)
+
 Self-hosted dashboard for quickly accessing your applications, infrastructure tools, and admin pages.
 
 Official Dashy GitHub repository: <https://github.com/Lissy93/dashy/>
@@ -72,7 +76,8 @@ docker ps --filter "name=dashy"
 
 ## Configuration Notes
 
-Dashy stores live configuration in `/app/user-data/conf.yml` inside the container (persisted in `dashy_user_data`).
+> [!NOTE]
+> Dashy stores live configuration in `/app/user-data/conf.yml` inside the container (persisted in `dashy_user_data`).
 
 Your `dashy_conf.yaml` in this folder is a standalone/exported config file and is useful for:
 
@@ -124,6 +129,8 @@ docker compose up -d
 
 ## Security Notes
 
-- This dashboard links to sensitive internal/admin endpoints.
+> [!WARNING]
+> This dashboard links to sensitive internal/admin endpoints.
+
 - Prefer restricting access to trusted networks only.
 - Consider placing Dashy behind your reverse proxy and authentication middleware.

@@ -1,5 +1,11 @@
 # Borg-Backup Application
 
+![BorgBackup](https://img.shields.io/badge/backup-borg-4C8B2B)
+![Borg UI](https://img.shields.io/badge/app-borg--ui-0F766E)
+![Docker Compose](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)
+![Redis](https://img.shields.io/badge/cache-redis%207-DC382D?logo=redis&logoColor=white)
+![Bash](https://img.shields.io/badge/scripts-bash-4EAA25?logo=gnubash&logoColor=white)
+
 This README documents only the borg-backup application in this folder, including its Docker Compose stack and local snapshot-prep scripts used by Borg.
 
 ## Files
@@ -39,6 +45,7 @@ Screenshot placeholder(s):
 - `[Screenshot Placeholder: Borg UI script entity - smiddleware-prep-appdata configuration]`
 - `[Screenshot Placeholder: Borg UI run history/output - smiddleware-prep-appdata]`
 
+> [!WARNING]
 > **Known gap — no optiplex-two wrapper.** This repo ships a prep script for optiplex-two
 > (`borg-prep-appdata-optiplex-two.sh`) but no matching `BORG_UI-optiplex-two-prep-appdata.sh`
 > wrapper, so nothing here triggers it. Either optiplex-two's prep runs from a Borg UI script
@@ -76,8 +83,10 @@ Screenshot placeholder(s):
 
 There is one prep script per backed-up host. They share a structure — stage into a temp
 directory, then atomically move it into `/var/backups/borg-apps/latest` — but each collects
-a different set of apps, because each host runs different things. **The host name in the
-filename is load-bearing: deploying the wrong one silently backs up nothing.**
+a different set of apps, because each host runs different things.
+
+> [!CAUTION]
+> **The host name in the filename is load-bearing: deploying the wrong one silently backs up nothing.**
 
 | Script | Host | Address | Deploy to |
 | --- | --- | --- | --- |
@@ -105,8 +114,11 @@ host at survey time. Behavior:
 - Snapshots the `statping` (`/data/compose/14`) and `portainer` (`/opt/docker/compose/portainer`) compose projects.
 - Snapshots app data under `/volume1/docker/portracker`, with a SQLite-safe backup of `portracker.db`.
 - Flushes Valkey/Redis persistence for `searxng-valkey`, and runs `pg_dumpall` against the `postgres` container.
-- Captures Tailscale state (**contains node keys — do not restore onto a second machine**) and k3s datastore/config when present.
+- Captures Tailscale state and k3s datastore/config when present.
 - Publishes the snapshot atomically by staging to a temp directory, then moving into `latest`.
+
+> [!CAUTION]
+> The Tailscale state **contains node keys — do not restore it onto a second machine.**
 
 Run manually with `sudo ./borg-prep-appdata-optiplex-two.sh`.
 
@@ -142,7 +154,8 @@ Output (in `./borg-survey-<name>-<timestamp>/`):
 - `borg-prep-appdata-<name>.sh` — generated prep script following the same staged/atomic-publish pattern as the existing per-host scripts, with DB-safe dumps (pg_dumpall, mysqldump, mongodump, SQLite `.backup`, k3s etcd-snapshot) for everything detected
 - `BORG_UI-<name>-prep-appdata.sh` — generated Borg UI script-entity wrapper (SSH trigger)
 
-The generated scripts are starting points reflecting what was detected at survey time — review rsync sources, database credentials, and any commented-out large directories before deploying to `/usr/local/sbin/`.
+> [!IMPORTANT]
+> The generated scripts are starting points reflecting what was detected at survey time — review rsync sources, database credentials, and any commented-out large directories before deploying to `/usr/local/sbin/`.
 
 ## What This Stack Does
 
@@ -189,13 +202,13 @@ The compose file currently uses these host paths:
 
 | Host path | Container path | Mode | Purpose |
 | --- | --- | --- | --- |
-| `/srv/borg-source` | `/source/data` | `ro` | Backup source data |
-| `/opt/borg-ui-empty` | `/source/empty` | `ro` | Empty placeholder source |
-| `/mnt/backups/borgrepo` | `/local/shared` | `rw` | Optiplex Borg repo |
-| `/mnt/borg_smiddleware` | `/local/smiddleware` | `rw` | Smiddleware Borg repo |
-| `/srv/borg-restore` | `/restore` | `rw` | Restore staging area |
-| `/var/log/borg` | `/logs` | `ro` | Borg job logs |
-| `/srv/borg-ui-config-export` | `/local/borgui-config-export` | `rw` | Borg UI config export snapshots (see `BORG_UI-borgui-config-export-snapshot.sh`) |
+| `/srv/borg-source` | `/source/data` | ![ro](https://img.shields.io/badge/ro-2563EB?style=flat-square) | Backup source data |
+| `/opt/borg-ui-empty` | `/source/empty` | ![ro](https://img.shields.io/badge/ro-2563EB?style=flat-square) | Empty placeholder source |
+| `/mnt/backups/borgrepo` | `/local/shared` | ![rw](https://img.shields.io/badge/rw-D97706?style=flat-square) | Optiplex Borg repo |
+| `/mnt/borg_smiddleware` | `/local/smiddleware` | ![rw](https://img.shields.io/badge/rw-D97706?style=flat-square) | Smiddleware Borg repo |
+| `/srv/borg-restore` | `/restore` | ![rw](https://img.shields.io/badge/rw-D97706?style=flat-square) | Restore staging area |
+| `/var/log/borg` | `/logs` | ![ro](https://img.shields.io/badge/ro-2563EB?style=flat-square) | Borg job logs |
+| `/srv/borg-ui-config-export` | `/local/borgui-config-export` | ![rw](https://img.shields.io/badge/rw-D97706?style=flat-square) | Borg UI config export snapshots (see `BORG_UI-borgui-config-export-snapshot.sh`) |
 
 Named volumes:
 
@@ -203,7 +216,8 @@ Named volumes:
 - `borgui_cache:/home/borg/.cache/borg` — Borg's own archive/chunk cache.
 - `borgui_redis:/data` (on the `redis` service) — Redis AOF persistence for the archive cache.
 
-If your host paths differ, edit `docker_compose.yml` before first start.
+> [!TIP]
+> If your host paths differ, edit `docker_compose.yml` before first start.
 
 ## Prerequisites
 
@@ -240,8 +254,9 @@ docker compose -f docker_compose.yml down
 
 ## App Snapshot Prep Script
 
-Run the prep script **for that host** before its Borg backup job, so Borg reads a stable
-snapshot:
+> [!IMPORTANT]
+> Run the prep script **for that host** before its Borg backup job, so Borg reads a stable
+> snapshot:
 
 ```bash
 sudo ./borg-prep-appdata-smiddleware.sh    # on smiddleware
@@ -273,7 +288,10 @@ Example cron flow:
 
 ## Security Notes
 
-- This container uses elevated settings (`/dev/fuse`, `SYS_ADMIN`, AppArmor unconfined). Restrict host access accordingly. `SYS_ADMIN` is required for FUSE-based repo mounting/browsing; the container's entrypoint also needs full default capabilities at startup (running as root) to `chown`/prepare `/home/borg` before dropping to the `PUID`/`PGID` user, so capabilities are not further restricted with `cap_drop`.
+> [!CAUTION]
+> This container uses elevated settings (`/dev/fuse`, `SYS_ADMIN`, AppArmor unconfined). Restrict host access accordingly.
+
+- `SYS_ADMIN` is required for FUSE-based repo mounting/browsing; the container's entrypoint also needs full default capabilities at startup (running as root) to `chown`/prepare `/home/borg` before dropping to the `PUID`/`PGID` user, so capabilities are not further restricted with `cap_drop`.
 - Borg repositories contain sensitive data. Protect `/mnt/backups/borgrepo` and `/mnt/borg_smiddleware` with strict filesystem permissions.
 - The config export path (`/srv/borg-ui-config-export`) contains Borg UI's database, secret key, and SSH keys — treat it with the same care as the repos themselves.
 - Keep backup logs and snapshot output directories readable only by trusted users.
