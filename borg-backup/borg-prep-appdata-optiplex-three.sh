@@ -50,13 +50,14 @@ docker network ls > "$TMP/docker/docker-networks.txt" 2>/dev/null || true
 docker inspect $(docker ps -aq) > "$TMP/docker/docker-inspect-all.json" 2>/dev/null || true
 
 # -----------------------------
-# Compose project: portainer-agent
+# Home directory: /home/thomas
 # -----------------------------
-if [ -d /home/thomas/portainer-agent ]; then
+if [ -d /home/thomas ]; then
   rsync -a --delete \
     --exclude='*.db-wal' \
     --exclude='*.db-shm' \
-    /home/thomas/portainer-agent/ "$TMP/apps/home-thomas-portainer-agent/"
+    --exclude='.cache/' \
+    /home/thomas/ "$TMP/apps/home-thomas/"
 fi
 
 # -----------------------------
