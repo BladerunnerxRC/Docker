@@ -1000,6 +1000,8 @@ generate_deploy_script() {
 #   sudo ./deploy-borg-prep-${NAME}.sh --rollback [--yes] [--test]
 #                       reinstall the newest backup (the current version is backed up first)
 #   sudo ./deploy-borg-prep-${NAME}.sh --list
+#   sudo ./deploy-borg-prep-${NAME}.sh --backup-only
+#                       back up the installed script without installing anything
 #
 #   --yes    install without the y/N prompt (required when not on a terminal)
 #   --test   run the installed prep script afterwards
@@ -1020,6 +1022,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --rollback) ACTION="rollback"; shift ;;
     --list)     ACTION="list"; shift ;;
+    --backup-only) ACTION="backup"; shift ;;
     --yes|-y)   ASSUME_YES=1; shift ;;
     --test)     RUN_TEST=1; shift ;;
     -h|--help)  awk 'NR>2 {if (!/^#/) exit; sub(/^# ?/,""); print}' "$0"; exit 0 ;;
@@ -1033,6 +1036,21 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo $0 ...)"
 
 list_backups() { ls -1t "$BACKUP_DIR"/borg-prep-appdata-"${NAME}".sh.* 2>/dev/null || true; }
+
+backup_current() {
+  local bak
+  install -d -o root -g root -m 700 "$BACKUP_DIR"
+  bak="$BACKUP_DIR/borg-prep-appdata-${NAME}.sh.$(date +%Y%m%d-%H%M%S)"
+  cp -p "$TARGET" "$bak"
+  echo "Backed up current script to $bak"
+  list_backups | tail -n +$((KEEP_BACKUPS + 1)) | xargs -r rm -f
+}
+
+if [ "$ACTION" = "backup" ]; then
+  [ -f "$TARGET" ] || die "nothing installed at $TARGET - nothing to back up"
+  backup_current
+  exit 0
+fi
 
 if [ "$ACTION" = "list" ]; then
   echo "Installed: $TARGET"
@@ -1097,13 +1115,7 @@ else
   # -----------------------------
   # Back up current, install new
   # -----------------------------
-  if [ -f "$TARGET" ]; then
-    install -d -o root -g root -m 700 "$BACKUP_DIR"
-    bak="$BACKUP_DIR/borg-prep-appdata-${NAME}.sh.$(date +%Y%m%d-%H%M%S)"
-    cp -p "$TARGET" "$bak"
-    echo "Backed up current script to $bak"
-    list_backups | tail -n +$((KEEP_BACKUPS + 1)) | xargs -r rm -f
-  fi
+  [ -f "$TARGET" ] && backup_current
 
   install -o root -g root -m 750 "$SRC" "$TARGET"
   echo "Installed $TARGET"
@@ -1116,6 +1128,49 @@ if [ "$RUN_TEST" -eq 1 ]; then
 fi
 EOF
   chmod +x "$out"
+}
+
+# ---------------------------------------------------------------------------
+# After generating: offer to back up and/or deploy via the generated deploy script
+# ---------------------------------------------------------------------------
+offer_deploy() {
+  local deploy="${OUT_DIR}/deploy-borg-prep-${NAME}.sh"
+  local target="/usr/local/sbin/borg-prep-appdata-${NAME}.sh"
+  local host ans
+  [ -t 0 ] || return 0
+  host="$(hostname -s 2>/dev/null || true)"
+  if [ "$host" != "$NAME" ]; then
+    echo
+    echo "Not offering deployment: this host is '${host}', the scripts are for '${NAME}'."
+    return 0
+  fi
+  if [ "$(id -u)" -ne 0 ]; then
+    echo
+    echo "Not offering deployment: not running as root. Later: sudo ${deploy}"
+    return 0
+  fi
+
+  echo
+  if [ -f "$target" ]; then
+    echo "Installed prep script: ${target} ($(stat -c '%s bytes, modified %y' "$target" 2>/dev/null | cut -d. -f1))"
+  else
+    echo "No prep script installed yet at ${target}."
+  fi
+  echo
+  echo "  1) Back up the installed script only"
+  echo "  2) Back up the installed script and deploy the new one (shows a diff and asks first)"
+  echo "  N) Nothing"
+  echo
+  while true; do
+    printf 'Choice [1/2/N]: '
+    read -r ans
+    case "$ans" in
+      1) bash "$deploy" --backup-only || true; break ;;
+      2) bash "$deploy" || true; break ;;
+      ""|n|N) echo "Nothing deployed. Later: sudo ${deploy} [--test]"; break ;;
+      *) echo "Please enter 1, 2, or N." ;;
+    esac
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -1223,4 +1278,6 @@ if [ "$DO_GENERATE" -eq 1 ]; then
   echo "  - Confirm database dump credentials (MySQL/MariaDB may need /root/.my.cnf on the host)."
   echo "  - Add /var/backups/borg-apps/latest (plus paths listed in REPORT.md) to the Borg job's source paths."
   echo "  - Test: sudo ${OUT_DIR}/borg-prep-appdata-${NAME}.sh && ls -la /var/backups/borg-apps/latest"
+
+  offer_deploy
 fi

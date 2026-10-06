@@ -176,6 +176,7 @@ prep script in the same folder:
 sudo ./deploy-borg-prep-optiplex-three.sh --test   # checks, diff, backup, install, test run
 sudo ./deploy-borg-prep-optiplex-three.sh --list   # installed version + backups
 sudo ./deploy-borg-prep-optiplex-three.sh --rollback
+sudo ./deploy-borg-prep-optiplex-three.sh --backup-only   # back up the installed script, install nothing
 ```
 
 It refuses the BORG_UI wrapper, CRLF line endings, syntax errors and the wrong host, and keeps
@@ -206,13 +207,23 @@ sudo ./borg-backup-survey.sh --from ./borg-survey-myserver-20260703-110322   # r
 
 Each survey saves its collected state to `raw/survey-state.sh`. On the next interactive run, if a previous survey directory for the host is found, the script asks whether to re-run the survey or reuse the existing raw data to generate the scripts (`--from DIR` does the same non-interactively).
 
+After generating scripts in an interactive root session on the target host, the survey asks what to do with the installed prep script:
+
+```text
+  1) Back up the installed script only
+  2) Back up the installed script and deploy the new one (shows a diff and asks first)
+  N) Nothing
+```
+
+Both options run the generated `deploy-borg-prep-<name>.sh`, so its safety checks and diff apply.
+
 Output (in `./borg-survey-<name>-<timestamp>/`):
 
 - `REPORT.md` — what was found, what Borg should back up, consistency caveats, suggested excludes
 - `raw/` — raw inventory data backing the report
 - `borg-prep-appdata-<name>.sh` — generated prep script following the same staged/atomic-publish pattern as the existing per-host scripts, with DB-safe dumps (pg_dumpall, mysqldump, mongodump, SQLite `.backup`, k3s etcd-snapshot) for everything detected
 - `BORG_UI-<name>-prep-appdata.sh` — generated Borg UI script-entity wrapper (SSH trigger)
-- `deploy-borg-prep-<name>.sh` — installs the prep script to `/usr/local/sbin`: backs up the old version, shows a diff, refuses the wrapper/CRLF/wrong host; `--test`, `--rollback`, `--list`
+- `deploy-borg-prep-<name>.sh` — installs the prep script to `/usr/local/sbin`: backs up the old version, shows a diff, refuses the wrapper/CRLF/wrong host; `--test`, `--rollback`, `--list`, `--backup-only`
 
 > [!IMPORTANT]
 > The generated scripts are starting points reflecting what was detected at survey time — review rsync sources, database credentials, and any commented-out large directories before deploying to `/usr/local/sbin/`.
