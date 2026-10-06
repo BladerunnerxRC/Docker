@@ -166,8 +166,15 @@ if command -v k3s >/dev/null 2>&1; then
     fi
   fi
   kubectl get all -A > "$TMP/kubernetes/resources-all.txt" 2>/dev/null || true
-  [ -d /etc/rancher/k3s ] && rsync -a --delete /etc/rancher/k3s/ "$TMP/kubernetes/etc-rancher-k3s/"
-  [ -d /var/lib/rancher/k3s/server/manifests ] && rsync -a --delete /var/lib/rancher/k3s/server/manifests/ "$TMP/kubernetes/manifests/"
+  # Same rsync handling as the home dir: 24 (files vanished mid-copy) is normal, other errors warn.
+  if [ -d /etc/rancher/k3s ]; then
+    rsync -a --delete /etc/rancher/k3s/ "$TMP/kubernetes/etc-rancher-k3s/" \
+      || { rc=$?; [ "$rc" -eq 24 ] || warn "rsync of /etc/rancher/k3s exited $rc (partial copy)"; }
+  fi
+  if [ -d /var/lib/rancher/k3s/server/manifests ]; then
+    rsync -a --delete /var/lib/rancher/k3s/server/manifests/ "$TMP/kubernetes/manifests/" \
+      || { rc=$?; [ "$rc" -eq 24 ] || warn "rsync of k3s manifests exited $rc (partial copy)"; }
+  fi
   [ -f /var/lib/rancher/k3s/server/token ] && install -m 600 /var/lib/rancher/k3s/server/token "$TMP/kubernetes/server-token"
 else
   section_skip "k3s not installed"
