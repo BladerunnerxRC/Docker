@@ -9,6 +9,9 @@
 # staged in a temporary directory and atomically moved to the "latest" location for
 # Borg to pick up. Run as root; backup data is protected with strict permissions (umask 077).
 #
+# Output: timestamped progress lines on stdout, warnings on stderr, and a summary table
+# at the end. The summary is also saved in the snapshot as metadata/prep-summary.txt.
+#
 # Usage:
 #   sudo ./borg-prep-appdata-optiplex-three.sh
 # Deploy to /usr/local/sbin/borg-prep-appdata-optiplex-three.sh on optiplex-three and ensure Borg
@@ -19,6 +22,7 @@
 set -Eeuo pipefail
 umask 077
 
+HOST_NAME="optiplex-three"
 BASE="/var/backups/borg-apps"
 LATEST="${BASE}/latest"
 
@@ -28,11 +32,76 @@ trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP"/{metadata,docker,apps,databases,native,tailscale,kubernetes}
 
-echo "Preparing app-consistent backup data for optiplex-three..."
+# -----------------------------
+# Logging and summary helpers
+# -----------------------------
+RUN_START=$(date +%s)
+WARNINGS=0
+declare -a SUMMARY_ROWS=()   # "label|status|files|bytes|seconds"
+declare -a WARN_LINES=()
+SEC_LABEL="" SEC_PATHS="" SEC_START=0 SEC_STATUS=""
+
+log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+warn() {
+  WARNINGS=$((WARNINGS + 1))
+  WARN_LINES+=("${SEC_LABEL:-general}: $*")
+  if [ -n "$SEC_LABEL" ]; then SEC_STATUS="WARN"; fi
+  printf '[%s] WARN: %s\n' "$(date +%H:%M:%S)" "$*" >&2
+}
+
+# Section paths are relative to $TMP; stats tolerate missing paths so set -e never trips here.
+section_start() {
+  SEC_LABEL="$1"; SEC_PATHS="$2"; SEC_START=$(date +%s); SEC_STATUS="OK"
+  log "${SEC_LABEL}..."
+}
+section_skip() {
+  log "${SEC_LABEL}: skipped ($*)"
+  SEC_STATUS="SKIP"
+}
+section_end() {
+  local files=0 bytes=0 p n b
+  for p in $SEC_PATHS; do
+    [ -e "$TMP/$p" ] || continue
+    n=$(find "$TMP/$p" -type f 2>/dev/null | wc -l) || n=0
+    b=$(du -sb "$TMP/$p" 2>/dev/null | awk '{print $1}') || b=0
+    files=$((files + n)); bytes=$((bytes + ${b:-0}))
+  done
+  SUMMARY_ROWS+=("${SEC_LABEL}|${SEC_STATUS}|${files}|${bytes}|$(( $(date +%s) - SEC_START ))")
+  SEC_LABEL=""
+}
+
+human() { numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || echo "${1:-0}B"; }
+
+print_summary() {
+  local row label status files bytes secs tot_files=0 tot_bytes=0 w line
+  line="$(printf '%.0s-' {1..72})"
+  echo "$line"
+  printf ' %s pre-backup snapshot - %s\n' "$HOST_NAME" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  echo "$line"
+  printf ' %-36s %-6s %8s %10s %6s\n' "Section" "Status" "Files" "Size" "Time"
+  printf ' %-36s %-6s %8s %10s %6s\n' "-------" "------" "-----" "----" "----"
+  for row in "${SUMMARY_ROWS[@]}"; do
+    IFS='|' read -r label status files bytes secs <<< "$row"
+    printf ' %-36s %-6s %8s %10s %5ss\n' "$label" "$status" "$files" "$(human "$bytes")" "$secs"
+    tot_files=$((tot_files + files)); tot_bytes=$((tot_bytes + bytes))
+  done
+  echo "$line"
+  printf ' %-36s %-6s %8s %10s %5ss\n' "Total" "" "$tot_files" "$(human "$tot_bytes")" "$(( $(date +%s) - RUN_START ))"
+  echo
+  echo " Snapshot:  ${LATEST}"
+  echo " Warnings:  ${WARNINGS}"
+  for w in "${WARN_LINES[@]}"; do echo "   - $w"; done
+  echo "$line"
+}
+
+trap 'printf "[%s] ERROR: %s failed at line %s: %s\n" "$(date +%H:%M:%S)" "${SEC_LABEL:-prep script}" "$LINENO" "$BASH_COMMAND" >&2' ERR
+
+log "Preparing app-consistent backup data for ${HOST_NAME}..."
 
 # -----------------------------
 # System and Docker inventory
 # -----------------------------
+section_start "System inventory" "metadata"
 {
   date -Is
   hostnamectl || true
@@ -41,50 +110,74 @@ echo "Preparing app-consistent backup data for optiplex-three..."
 } > "$TMP/metadata/system-info.txt"
 
 dpkg-query -W -f='${binary:Package}\t${Version}\n' > "$TMP/metadata/dpkg-packages.tsv" 2>/dev/null || true
+section_end
 
-docker ps -a --no-trunc > "$TMP/docker/docker-ps-a.txt" 2>/dev/null || true
-docker images --digests > "$TMP/docker/docker-images.txt" 2>/dev/null || true
-docker volume ls > "$TMP/docker/docker-volumes.txt" 2>/dev/null || true
-docker network ls > "$TMP/docker/docker-networks.txt" 2>/dev/null || true
+section_start "Docker inventory" "docker"
+if command -v docker >/dev/null 2>&1; then
+  docker ps -a --no-trunc > "$TMP/docker/docker-ps-a.txt" 2>/dev/null || true
+  docker images --digests > "$TMP/docker/docker-images.txt" 2>/dev/null || true
+  docker volume ls > "$TMP/docker/docker-volumes.txt" 2>/dev/null || true
+  docker network ls > "$TMP/docker/docker-networks.txt" 2>/dev/null || true
 
-docker inspect $(docker ps -aq) > "$TMP/docker/docker-inspect-all.json" 2>/dev/null || true
+  docker inspect $(docker ps -aq) > "$TMP/docker/docker-inspect-all.json" 2>/dev/null || true
+
+  # Docker volume metadata only - the actual /var/lib/docker/volumes path is backed up by Borg directly.
+  if [ -d /var/lib/docker/volumes ]; then
+    find /var/lib/docker/volumes -maxdepth 3 -mindepth 1 -print > "$TMP/docker/docker-volume-tree.txt" 2>/dev/null || true
+  fi
+else
+  section_skip "docker not installed"
+fi
+section_end
 
 # -----------------------------
 # Home directory: /home/thomas
 # -----------------------------
+section_start "Home directory (/home/thomas)" "apps/home-thomas"
 if [ -d /home/thomas ]; then
   rsync -a --delete \
     --exclude='*.db-wal' \
     --exclude='*.db-shm' \
     --exclude='.cache/' \
-    /home/thomas/ "$TMP/apps/home-thomas/"
+    /home/thomas/ "$TMP/apps/home-thomas/" \
+    || { rc=$?; [ "$rc" -eq 24 ] || warn "rsync of /home/thomas exited $rc (partial copy)"; }  # 24 = files vanished mid-copy, normal on a live home dir
+else
+  section_skip "/home/thomas not found"
 fi
+section_end
 
 # -----------------------------
 # Kubernetes (k3s): datastore snapshot + config
 # -----------------------------
+section_start "Kubernetes (k3s)" "kubernetes"
 if command -v k3s >/dev/null 2>&1; then
   # etcd datastore: use the built-in snapshot; SQLite datastore: safe-copy the db.
+  # On a worker node neither exists - cluster state lives on the k3s server.
   if [ -d /var/lib/rancher/k3s/server/db/etcd ]; then
     k3s etcd-snapshot save --dir "$TMP/kubernetes/etcd-snapshots" >/dev/null 2>&1 \
-      || echo "WARN: k3s etcd-snapshot failed"
+      || warn "k3s etcd-snapshot failed"
   elif [ -f /var/lib/rancher/k3s/server/db/state.db ]; then
-    sqlite3 /var/lib/rancher/k3s/server/db/state.db \
-      ".backup '$TMP/kubernetes/k3s-state.db.sqlite-backup'" 2>/dev/null || true
+    if command -v sqlite3 >/dev/null 2>&1; then
+      sqlite3 /var/lib/rancher/k3s/server/db/state.db \
+        ".backup '$TMP/kubernetes/k3s-state.db.sqlite-backup'" 2>/dev/null \
+        || warn "sqlite3 backup of k3s state.db failed"
+    else
+      warn "sqlite3 not installed - k3s state.db not captured (apt install sqlite3)"
+    fi
   fi
   kubectl get all -A > "$TMP/kubernetes/resources-all.txt" 2>/dev/null || true
+  [ -d /etc/rancher/k3s ] && rsync -a --delete /etc/rancher/k3s/ "$TMP/kubernetes/etc-rancher-k3s/"
+  [ -d /var/lib/rancher/k3s/server/manifests ] && rsync -a --delete /var/lib/rancher/k3s/server/manifests/ "$TMP/kubernetes/manifests/"
+  [ -f /var/lib/rancher/k3s/server/token ] && install -m 600 /var/lib/rancher/k3s/server/token "$TMP/kubernetes/server-token"
+else
+  section_skip "k3s not installed"
 fi
-[ -d /etc/rancher/k3s ] && rsync -a --delete /etc/rancher/k3s/ "$TMP/kubernetes/etc-rancher-k3s/"
-[ -d /var/lib/rancher/k3s/server/manifests ] && rsync -a --delete /var/lib/rancher/k3s/server/manifests/ "$TMP/kubernetes/manifests/"
-[ -f /var/lib/rancher/k3s/server/token ] && install -m 600 /var/lib/rancher/k3s/server/token "$TMP/kubernetes/server-token"
+section_end
 
 # -----------------------------
-# Docker volume metadata only
-# The actual /var/lib/docker/volumes path is backed up by Borg directly.
+# Summary (saved into the snapshot, then printed)
 # -----------------------------
-if [ -d /var/lib/docker/volumes ]; then
-  find /var/lib/docker/volumes -maxdepth 3 -mindepth 1 -print > "$TMP/docker/docker-volume-tree.txt" 2>/dev/null || true
-fi
+print_summary > "$TMP/metadata/prep-summary.txt"
 
 # -----------------------------
 # Atomic publish of latest snapshot
@@ -98,4 +191,6 @@ mv "$TMP" "$LATEST"
 trap - EXIT
 rm -rf "${BASE}/previous"
 
-echo "App-data snapshot ready at ${LATEST}"
+log "App-data snapshot ready at ${LATEST}"
+echo
+cat "${LATEST}/metadata/prep-summary.txt"
