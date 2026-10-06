@@ -175,12 +175,21 @@ prep script in the same folder:
 ```bash
 sudo ./deploy-borg-prep-optiplex-three.sh --test   # checks, diff, backup, install, test run
 sudo ./deploy-borg-prep-optiplex-three.sh --list   # installed version + backups
-sudo ./deploy-borg-prep-optiplex-three.sh --rollback
+sudo ./deploy-borg-prep-optiplex-three.sh --rollback      # newest backup that differs from the installed script
 sudo ./deploy-borg-prep-optiplex-three.sh --backup-only   # back up the installed script, install nothing
 ```
 
-It refuses the BORG_UI wrapper, CRLF line endings, syntax errors and the wrong host, and keeps
-the last 10 replaced versions in `/var/backups/borg-prep-scripts/`.
+It refuses the BORG_UI wrapper, CRLF line endings, syntax errors and the wrong host. Each backup
+goes in its own date-time folder on the Synology share, and the last 10 are kept per host:
+
+```text
+/mnt/backups/borg-script-backups/optiplex-three/20261006-143000/borg-prep-appdata-optiplex-three.sh
+```
+
+> [!IMPORTANT]
+> `/mnt/backups` must be mounted on the host being deployed. If it isn't, the deploy script
+> installs, backs up and rolls back nothing. Backups from before this change stay in
+> `/var/backups/borg-prep-scripts/` and are not used by `--rollback`.
 
 ### `borg-backup-survey.sh`
 
