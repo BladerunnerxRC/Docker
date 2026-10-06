@@ -216,6 +216,11 @@ After generating scripts in an interactive root session on the target host, the 
 ```
 
 Both options run the generated `deploy-borg-prep-<name>.sh`, so its safety checks and diff apply.
+If the deploy script fails (a refused file, the wrong host), the survey exits with its error code;
+answering N at the deploy script's own y/N prompt (exit 3) counts as a cancel, not a failure.
+
+`--name` and `--address` must be plain hostnames or IP addresses, because they are written into the
+generated scripts; anything else is refused before the survey starts.
 
 Output (in `./borg-survey-<name>-<timestamp>/`):
 

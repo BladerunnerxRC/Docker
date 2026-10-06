@@ -92,6 +92,17 @@ fi
 [ -n "$NAME" ] || NAME="$(hostname -s 2>/dev/null || echo server)"
 [ -n "$ADDRESS" ] || ADDRESS="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 [ -n "$ADDRESS" ] || ADDRESS="<server-ip>"
+
+# NAME and ADDRESS are written into generated shell scripts, so only allow hostname-safe tokens.
+if ! [[ "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]]; then
+  echo "ERROR: server name '$NAME' is not a valid short hostname (letters, digits, '-'); pass --name NAME." >&2
+  exit 1
+fi
+if [ "$ADDRESS" != "<server-ip>" ] && ! [[ "$ADDRESS" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]; then
+  echo "ERROR: address '$ADDRESS' is not a valid IP address or hostname; pass --address ADDR." >&2
+  exit 1
+fi
+
 STAMP="$(date +%Y%m%d-%H%M%S)"
 [ -n "$OUT_DIR" ] || OUT_DIR="./borg-survey-${NAME}-${STAMP}"
 RAW="${OUT_DIR}/raw"
@@ -1006,12 +1017,14 @@ generate_deploy_script() {
 #   --yes    install without the y/N prompt (required when not on a terminal)
 #   --test   run the installed prep script afterwards
 #
+# Exit status: 0 success, 3 declined at the y/N prompt (nothing changed), other non-zero on error.
+#
 # Licensed under the MIT License. Provided "as is" without warranty.
 
 set -Eeuo pipefail
 
-NAME="${NAME}"
 EOF
+  printf 'NAME=%q\n' "$NAME" >> "$out"
   cat >> "$out" <<'EOF'
 TARGET="/usr/local/sbin/borg-prep-appdata-${NAME}.sh"
 BACKUP_DIR="/var/backups/borg-prep-scripts"
@@ -1040,7 +1053,9 @@ list_backups() { ls -1t "$BACKUP_DIR"/borg-prep-appdata-"${NAME}".sh.* 2>/dev/nu
 backup_current() {
   local bak
   install -d -o root -g root -m 700 "$BACKUP_DIR"
-  bak="$BACKUP_DIR/borg-prep-appdata-${NAME}.sh.$(date +%Y%m%d-%H%M%S)"
+  # mktemp creates the file atomically with a unique suffix, so two backups in the same second
+  # cannot overwrite each other.
+  bak="$(mktemp "$BACKUP_DIR/borg-prep-appdata-${NAME}.sh.$(date +%Y%m%d-%H%M%S).XXXXXX")"
   cp -p "$TARGET" "$bak"
   echo "Backed up current script to $bak"
   list_backups | tail -n +$((KEEP_BACKUPS + 1)) | xargs -r rm -f
@@ -1109,7 +1124,7 @@ else
     [ -t 0 ] || die "not on a terminal - re-run with --yes to install without prompting"
     printf 'Install %s to %s? [y/N] ' "$SRC" "$TARGET"
     read -r ans
-    case "$ans" in y|Y|yes|YES) ;; *) echo "Aborted, nothing changed."; exit 1 ;; esac
+    case "$ans" in y|Y|yes|YES) ;; *) echo "Aborted, nothing changed."; exit 3 ;; esac
   fi
 
   # -----------------------------
@@ -1136,7 +1151,7 @@ EOF
 offer_deploy() {
   local deploy="${OUT_DIR}/deploy-borg-prep-${NAME}.sh"
   local target="/usr/local/sbin/borg-prep-appdata-${NAME}.sh"
-  local host ans
+  local host ans rc=0
   [ -t 0 ] || return 0
   host="$(hostname -s 2>/dev/null || true)"
   if [ "$host" != "$NAME" ]; then
@@ -1165,12 +1180,20 @@ offer_deploy() {
     printf 'Choice [1/2/N]: '
     read -r ans
     case "$ans" in
-      1) bash "$deploy" --backup-only || true; break ;;
-      2) bash "$deploy" || true; break ;;
+      1) bash "$deploy" --backup-only || rc=$?; break ;;
+      2) bash "$deploy" || rc=$?; break ;;
       ""|n|N) echo "Nothing deployed. Later: sudo ${deploy} [--test]"; break ;;
       *) echo "Please enter 1, 2, or N." ;;
     esac
   done
+
+  # The deploy script exits 3 when its y/N prompt is declined: a choice, not a failure.
+  case "$rc" in
+    0) ;;
+    3) echo "Deployment cancelled, nothing changed. Later: sudo ${deploy} [--test]" ;;
+    *) echo "ERROR: ${deploy} failed (exit ${rc}) - see the messages above." >&2
+       return "$rc" ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
