@@ -17,6 +17,7 @@ Docker templates and misc self-hosted stack configs.
 | [Dashy](Dashy/) | Self-hosted homepage / dashboard for organizing links to your services, hardened with dropped capabilities and resource limits. |
 | [Komga](Komga/) | Comics, manga, and ebook library server with a web reader and OPDS support. |
 | [Manyfold3D](Manyfold3D/) | Self-hosted library/organizer for 3D-printable models, backed by PostgreSQL and Redis. |
+| [Matomo](Matomo/) | Self-hosted web analytics (Google Analytics alternative) on MariaDB, with a cron sidecar for report archiving and a Borg pre-backup hook. |
 | [nocodb](nocodb/) | NocoDB — no-code database / Airtable-style UI over a PostgreSQL backend. |
 | [portracker](portracker/) | Network port tracker that discovers and maps exposed container/host ports. |
 | [SearXNG](SearXNG/) | Privacy-respecting metasearch engine with a Valkey backend for rate limiting, packaged as a Portainer stack. |
