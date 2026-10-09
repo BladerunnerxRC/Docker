@@ -40,41 +40,65 @@ through a pre-backup hook.
 
 ## Architecture
 
+### Infrastructure
+
+Where each container sits, which networks it joins, and what it stores.
+
 ```mermaid
-flowchart LR
-    subgraph clients["🌐 Browsers"]
-        direction TB
-        V["Visitors on tracked sites<br/>(JS tracker → matomo.php)"]
-        A["You<br/>(Matomo dashboard)"]
+flowchart TB
+    subgraph lan["🏠 LAN clients"]
+        direction LR
+        V["Visitor browser<br/>on a tracked site"]
+        A["Admin browser<br/>Matomo dashboard"]
     end
 
-    T["Traefik<br/>edge network · step-ca TLS"]
+    DNS["AdGuard DNS<br/>matomo.shome → Traefik"]
 
-    subgraph host["🐳 Docker Host"]
+    subgraph host["🐳 Docker host"]
         direction TB
-        APP["matomo<br/>matomo:5-apache · :80"]
-        CRON["matomo-cron<br/>core:archive loop"]
-        DB[("matomo-db<br/>mariadb:11")]
-        HTML["matomo_html<br/>/var/www/html"]
-        DBV["matomo_db<br/>/var/lib/mysql"]
-        HOOK["borg-prep-matomo.sh"]
-        STAGE["/var/backups/borg-matomo/latest"]
+
+        subgraph edgeNet["edge network · external, owned by the traefik stack"]
+            direction LR
+            T["Traefik :443<br/>TLS via step-ca"]
+            MW["Router middlewares<br/>matomo-ipallow → security-headers<br/>→ compression"]
+            APP["matomo<br/>matomo:5-apache · :80<br/>also joined to matomo-back"]
+        end
+
+        subgraph back["matomo-back · internal: true, no gateway"]
+            direction LR
+            CRON["matomo-cron<br/>core:archive every<br/>ARCHIVE_INTERVAL"]
+            DB[("matomo-db<br/>mariadb:11 · :3306")]
+        end
+
+        subgraph vols["Named volumes · local disk"]
+            direction LR
+            HTML[["matomo_html · /var/www/html<br/>code · config.ini.php · plugins · GeoIP"]]
+            DBV[["matomo_db · /var/lib/mysql"]]
+        end
+
+        subgraph bk["Backup staging · host"]
+            direction LR
+            HOOK["borg-prep-matomo.sh"]
+            STAGE["/var/backups/borg-matomo/latest<br/>matomo.sql · matomo-html.tar · metadata"]
+        end
     end
 
-    REPO[("🛡️ Borg Repository")]
+    REPO[("🛡️ Borg repository")]
 
-    V -->|https| T
-    A -->|https| T
-    T -->|edge| APP
-    APP -->|matomo-back| DB
-    CRON -->|matomo-back| DB
+    lan -. "resolve" .-> DNS
+    V -->|"https · matomo.js / matomo.php"| T
+    A -->|"https · UI + API"| T
+    T --> MW
+    MW -->|"http · X-Forwarded-For"| APP
+    APP -->|SQL| DB
+    CRON -->|SQL| DB
     APP --- HTML
     CRON --- HTML
     DB --- DBV
-    HOOK -->|mariadb-dump| DB
-    HOOK -->|tar| APP
+    HOOK -. "mariadb-dump" .-> DB
+    HOOK -. "tar" .-> HTML
     HOOK --> STAGE
-    STAGE -->|borg create| REPO
+    STAGE -->|"borg create"| REPO
 
     classDef client fill:#3152A0,stroke:#1E3466,stroke-width:2px,color:#fff
     classDef app fill:#95C748,stroke:#5E8A22,stroke-width:2px,color:#000
@@ -88,7 +112,73 @@ flowchart LR
     class DB database
     class HTML,DBV storage
     class HOOK,STAGE,REPO backup
-    class T proxy
+    class T,MW,DNS proxy
+```
+
+### Request & data flow
+
+What happens on a page view, on each archiver cycle, and when you open the dashboard.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor B as Visitor browser
+    participant S as Tracked site
+    participant T as Traefik
+    participant M as matomo
+    participant D as matomo-db
+    participant C as matomo-cron
+    actor A as Admin browser
+
+    rect rgba(49, 82, 160, 0.12)
+    note over B,D: Tracking — real-time, every page view
+    B->>S: GET page
+    S-->>B: HTML + Matomo tracking snippet
+    B->>T: GET https://matomo.shome/matomo.js
+    T->>M: IP allowlist passed → http :80
+    M-->>B: matomo.js
+    B->>T: GET /matomo.php?idsite=…&url=…
+    T->>M: forward, adds X-Forwarded-For: client IP
+    M->>D: INSERT raw visit + action<br/>IP from X-Forwarded-For, then anonymised
+    M-->>B: 204 No Content
+    end
+
+    rect rgba(149, 199, 72, 0.15)
+    note over C,D: Archiving — every ARCHIVE_INTERVAL (default 3600 s)
+    loop core:archive --url=https://matomo.shome/
+        C->>D: read raw log_* tables
+        C->>D: write pre-aggregated archive_* tables
+        C->>C: sleep ARCHIVE_INTERVAL
+    end
+    end
+
+    rect rgba(36, 161, 193, 0.12)
+    note over A,D: Reporting — browser archiving disabled
+    A->>T: GET https://matomo.shome/
+    T->>M: forward
+    M->>D: read pre-built archives only
+    M-->>A: dashboard and reports
+    end
+```
+
+### Backup flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as Borg UI job
+    participant H as Docker host · root
+    participant D as matomo-db
+    participant M as matomo
+    participant R as Borg repository
+
+    UI->>H: ssh → borg-prep-matomo.sh
+    H->>D: mariadb-dump --single-transaction
+    D-->>H: matomo.sql, checked for "Dump completed"
+    H->>M: tar /var/www/html, minus tmp/ and *.mmdb
+    M-->>H: matomo-html.tar, checked for config.ini.php
+    H->>H: write metadata + sha256sums<br/>atomic mv → latest/
+    UI->>R: borg create, includes /var/backups/borg-matomo/latest
 ```
 
 | Service | Image | Networks | Purpose |
