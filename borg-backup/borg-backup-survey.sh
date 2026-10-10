@@ -119,8 +119,12 @@ slugify() { echo "$1" | sed 's|^/||; s|/|-|g; s|[^A-Za-z0-9._-]|_|g'; }
 
 dir_size() {
   # Human-readable size of a directory, bounded so a huge tree can't stall the survey.
+  # du exits non-zero after printing its total when some entries are unreadable: keep that
+  # total, and print "?" only when there is none (du timed out).
+  local s
   if [ -d "$1" ]; then
-    timeout 20 du -sh "$1" 2>/dev/null | awk '{print $1}' || echo "?"
+    s="$(timeout 20 du -sh "$1" 2>/dev/null | awk 'NR == 1 {print $1}')" || true
+    echo "${s:-?}"
   else
     echo "-"
   fi
@@ -145,8 +149,12 @@ declare -a HOME_DIRS=()          # home dirs of login users (UID 1000+ under /ho
 declare -A HOME_SIZE=()          # home dir -> du -sh size, measured once (not saved in state)
 declare -A DIR_SEEN=()           # dedup for APP_DIRS
 
-# du -sh sizes of 10G and up are LARGE: their copies are generated commented out.
-is_large() { case "$1" in *T|[0-9][0-9]G|[0-9][0-9][0-9]G) return 0 ;; esac; return 1; }
+# dir_size results of 10G and up, or unknown ("?"), are LARGE: their copies are generated
+# commented out so the operator decides. du -h prints whole numbers from 10 up (even 1010G).
+is_large() { [[ "$1" == "?" || "$1" =~ ^[0-9]{2,}G$ || "$1" =~ ^[0-9.]+[TPE]$ ]]; }
+
+# Why a LARGE directory was generated commented out, for comments and the report.
+large_note() { if [ "$1" = "?" ]; then echo "size unknown, du timed out"; else echo "LARGE: $1"; fi; }
 
 # Fills HOME_SIZE for every home dir not measured yet. Call directly, not in $( ): the
 # cache has to survive in this shell.
@@ -217,6 +225,7 @@ collect_homes() {
     [[ "$uid" =~ ^[0-9]+$ ]] && [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] || continue
     case "$home" in /home/?*) ;; *) continue ;; esac
     [ -d "$home" ] || continue
+    [ -z "${HOME_SIZE[$home]:-}" ] || continue   # several accounts can share one home
     HOME_DIRS+=("$home")
     HOME_SIZE[$home]="$(dir_size "$home")"
     printf '%s\t%s\t%s\n' "$user" "$home" "${HOME_SIZE[$home]}" >> "$RAW/home-dirs.tsv"
@@ -546,7 +555,7 @@ write_report() {
       for hd in "${HOME_DIRS[@]}"; do
         hsize="${HOME_SIZE[$hd]:-?}"
         if is_large "$hsize"; then
-          echo "- \`${hd}\` (${hsize}) - LARGE: generated commented out; consider having Borg read it directly"
+          echo "- \`${hd}\` ($(large_note "$hsize")) - generated commented out; consider having Borg read it directly"
         else
           echo "- \`${hd}\` (${hsize}) - copied into the snapshot, excluding \`.cache/\`"
         fi
@@ -629,13 +638,31 @@ generate_prep_script() {
   local out="${OUT_DIR}/borg-prep-appdata-${NAME}.sh"
   echo "==> Generating ${out}"
 
-  # Home dirs that are copied whole (not LARGE). App dirs and compose projects inside one are
-  # skipped below, so nothing is copied into the snapshot twice.
+  local h h2 d p wdir slug inhome
+  local -A app_size=() home_note=()   # home_note: why a home gets no copy of its own
+
+  # Decide what is copied whole, so nothing lands in the snapshot twice:
+  #  - a home inside a copied app dir (a container bind-mounting /home) is copied with it;
+  #  - a home inside another copied home is copied with that one;
+  #  - app dirs and compose projects inside a copied home are skipped further down.
   measure_homes
-  local h
+  for d in "${APP_DIRS[@]}"; do app_size[$d]="$(dir_size "$d")"; done
+  for h in "${HOME_DIRS[@]}"; do
+    is_large "${HOME_SIZE[$h]}" && continue
+    for d in "${APP_DIRS[@]}"; do
+      is_large "${app_size[$d]}" && continue
+      case "$h" in "$d"|"$d"/*) home_note[$h]="inside app dir ${d}, copied with it"; break ;; esac
+    done
+  done
   COPIED_HOMES=()
   for h in "${HOME_DIRS[@]}"; do
-    is_large "${HOME_SIZE[$h]}" || COPIED_HOMES+=("$h")
+    is_large "${HOME_SIZE[$h]}" && continue
+    [ -z "${home_note[$h]:-}" ] || continue
+    for h2 in "${HOME_DIRS[@]}"; do
+      [ "$h2" != "$h" ] && [ -z "${home_note[$h2]:-}" ] && ! is_large "${HOME_SIZE[$h2]}" || continue
+      case "$h" in "$h2"/*) home_note[$h]="inside home ${h2}, copied with it"; break ;; esac
+    done
+    [ -n "${home_note[$h]:-}" ] || COPIED_HOMES+=("$h")
   done
 
   cat > "$out" <<EOF
@@ -694,6 +721,8 @@ warn() {
 }
 
 # Section paths are relative to $TMP; stats tolerate missing paths so set -e never trips here.
+# One find pass gives both counts (file bytes, not disk usage); %.0f keeps mawk from printing
+# large totals in exponent form.
 section_start() {
   SEC_LABEL="$1"; SEC_PATHS="$2"; SEC_START=$(date +%s); SEC_STATUS="OK"
   log "${SEC_LABEL}..."
@@ -706,9 +735,10 @@ section_end() {
   local files=0 bytes=0 p n b
   for p in $SEC_PATHS; do
     [ -e "$TMP/$p" ] || continue
-    n=$(find "$TMP/$p" -type f 2>/dev/null | wc -l) || n=0
-    b=$(du -sb "$TMP/$p" 2>/dev/null | awk '{print $1}') || b=0
-    files=$((files + n)); bytes=$((bytes + ${b:-0}))
+    n=0 b=0
+    read -r n b < <(find "$TMP/$p" -type f -printf '%s\n' 2>/dev/null \
+      | awk '{n++; b += $1} END {printf "%.0f %.0f\n", n, b}') || true
+    files=$((files + ${n:-0})); bytes=$((bytes + ${b:-0}))
   done
   SUMMARY_ROWS+=("${SEC_LABEL}|${SEC_STATUS}|${files}|${bytes}|$(( $(date +%s) - SEC_START ))")
   SEC_LABEL=""
@@ -791,7 +821,6 @@ else
 fi
 section_end
 EOF
-    local p wdir slug inhome
     for p in "${!COMPOSE_PROJECTS[@]}"; do
       wdir="${COMPOSE_PROJECTS[$p]}"
       slug="$(slugify "$wdir")"
@@ -819,20 +848,27 @@ EOF
   fi
 
   # --- Home directories ---
+  # Only ~/.cache is excluded (/.cache/ is anchored to the home), and --one-file-system keeps
+  # NAS shares or other mounts under the home out of the snapshot.
   local hslug hsize
   for h in "${HOME_DIRS[@]}"; do
     hslug="$(slugify "$h")"
     hsize="${HOME_SIZE[$h]}"
-    if is_large "$hsize"; then
+    if [ -n "${home_note[$h]:-}" ]; then
+      cat >> "$out" <<EOF
+
+# Home directory ${h} is ${home_note[$h]}.
+EOF
+    elif is_large "$hsize"; then
       cat >> "$out" <<EOF
 
 # -----------------------------
-# Home directory: ${h} (LARGE: ${hsize} - review before enabling; consider having Borg
-# read this path directly instead of duplicating it into the snapshot)
+# Home directory: ${h} ($(large_note "$hsize") - review before enabling; consider having
+# Borg read this path directly instead of duplicating it into the snapshot)
 # -----------------------------
 section_start "Home directory (${h})" "apps/${hslug}"
-section_skip "LARGE, disabled in this script"
-# copy_tree ${h}/ "\$TMP/apps/${hslug}/" --exclude='*.db-wal' --exclude='*.db-shm' --exclude='.cache/'
+section_skip "$(large_note "$hsize"), disabled in this script"
+# copy_tree ${h}/ "\$TMP/apps/${hslug}/" --one-file-system --exclude='/.cache/' --exclude='*.db-wal' --exclude='*.db-shm'
 section_end
 EOF
     else
@@ -843,7 +879,7 @@ EOF
 # -----------------------------
 section_start "Home directory (${h})" "apps/${hslug}"
 if [ -d ${h} ]; then
-  copy_tree ${h}/ "\$TMP/apps/${hslug}/" --exclude='*.db-wal' --exclude='*.db-shm' --exclude='.cache/'
+  copy_tree ${h}/ "\$TMP/apps/${hslug}/" --one-file-system --exclude='/.cache/' --exclude='*.db-wal' --exclude='*.db-shm'
 else
   section_skip "${h} not found"
 fi
@@ -853,7 +889,7 @@ EOF
   done
 
   # --- Bind-mounted app dirs ---
-  local d size
+  local size
   for d in "${APP_DIRS[@]}"; do
     slug="$(slugify "$d")"
     if inhome="$(home_containing "$d")"; then
@@ -863,17 +899,17 @@ EOF
 EOF
       continue
     fi
-    size="$(dir_size "$d")"
+    size="${app_size[$d]}"
     if is_large "$size"; then
       # Very large directory: include commented out so the operator decides.
       cat >> "$out" <<EOF
 
 # -----------------------------
-# App data: ${d} (LARGE: ${size} - review before enabling; consider having Borg
-# read this path directly instead of duplicating it into the snapshot)
+# App data: ${d} ($(large_note "$size") - review before enabling; consider having
+# Borg read this path directly instead of duplicating it into the snapshot)
 # -----------------------------
 section_start "App data (${d})" "apps/${slug}"
-section_skip "LARGE, disabled in this script"
+section_skip "$(large_note "$size"), disabled in this script"
 # copy_tree ${d}/ "\$TMP/apps/${slug}/" --exclude='*.db-wal' --exclude='*.db-shm'
 section_end
 EOF
@@ -1147,17 +1183,18 @@ if command -v k3s >/dev/null 2>&1; then
     fi
   fi
   kubectl get all -A > "$TMP/kubernetes/resources-all.txt" 2>/dev/null || true
-  if [ -d /etc/rancher/k3s ]; then
-    copy_tree /etc/rancher/k3s/ "$TMP/kubernetes/etc-rancher-k3s/"
-  fi
-  if [ -d /var/lib/rancher/k3s/server/manifests ]; then
-    copy_tree /var/lib/rancher/k3s/server/manifests/ "$TMP/kubernetes/manifests/"
-  fi
-  if [ -f /var/lib/rancher/k3s/server/token ]; then
-    install -m 600 /var/lib/rancher/k3s/server/token "$TMP/kubernetes/server-token"
-  fi
 else
-  section_skip "k3s not installed"
+  log "k3s command not found - copying k3s config files only"
+fi
+# Config, manifests and token are copied whenever they exist, k3s command or not.
+if [ -d /etc/rancher/k3s ]; then
+  copy_tree /etc/rancher/k3s/ "$TMP/kubernetes/etc-rancher-k3s/"
+fi
+if [ -d /var/lib/rancher/k3s/server/manifests ]; then
+  copy_tree /var/lib/rancher/k3s/server/manifests/ "$TMP/kubernetes/manifests/"
+fi
+if [ -f /var/lib/rancher/k3s/server/token ]; then
+  install -m 600 /var/lib/rancher/k3s/server/token "$TMP/kubernetes/server-token"
 fi
 section_end
 EOF
