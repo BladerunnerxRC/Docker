@@ -20,6 +20,7 @@
 #     InfluxDB, ...) and SQLite files found in bind-mounted app dirs
 #   - Applications outside Docker (systemd services: web servers, databases, media
 #     servers, monitoring, etc.) and their usual data/config paths
+#   - Home directories of login users (UID 1000+ under /home)
 #   - Tailscale (daemon state, node status)
 #   - Kubernetes (k3s, microk8s, kubeadm) including datastore/etcd considerations
 #   - Other platforms: LXD, libvirt/KVM, snap packages, ZFS datasets
@@ -140,7 +141,33 @@ TAILSCALE_STATE=""
 K8S_KIND=""                      # k3s | microk8s | kubeadm | ""
 declare -a K8S_PATHS=()
 declare -a OTHER_PLATFORMS=()    # freeform notes: LXD, libvirt, ZFS, ...
+declare -a HOME_DIRS=()          # home dirs of login users (UID 1000+ under /home)
+declare -A HOME_SIZE=()          # home dir -> du -sh size, measured once (not saved in state)
 declare -A DIR_SEEN=()           # dedup for APP_DIRS
+
+# du -sh sizes of 10G and up are LARGE: their copies are generated commented out.
+is_large() { case "$1" in *T|[0-9][0-9]G|[0-9][0-9][0-9]G) return 0 ;; esac; return 1; }
+
+# Fills HOME_SIZE for every home dir not measured yet. Call directly, not in $( ): the
+# cache has to survive in this shell.
+measure_homes() {
+  local h
+  for h in "${HOME_DIRS[@]}"; do
+    [ -n "${HOME_SIZE[$h]:-}" ] || HOME_SIZE[$h]="$(dir_size "$h")"
+  done
+}
+
+# Home dirs the generated prep script copies whole (set by generate_prep_script).
+declare -a COPIED_HOMES=()
+
+# Prints the copied home dir that contains path $1; fails if none does.
+home_containing() {
+  local h
+  for h in "${COPIED_HOMES[@]}"; do
+    case "$1" in "$h"|"$h"/*) echo "$h"; return 0 ;; esac
+  done
+  return 1
+}
 
 add_app_dir() {
   local d="$1"
@@ -177,6 +204,23 @@ collect_system() {
   have snap && snap list > "$RAW/snap-list.txt" 2>/dev/null || true
   crontab -l > "$RAW/root-crontab.txt" 2>/dev/null || true
   ls /etc/cron.d /etc/cron.daily /etc/cron.weekly > "$RAW/cron-dirs.txt" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# Collector: home directories
+# ---------------------------------------------------------------------------
+collect_homes() {
+  echo "==> Collecting home directories..."
+  local user uid home
+  # 60000+ are system/nobody accounts; homes outside /home are service accounts.
+  while IFS=: read -r user _ uid _ _ home _; do
+    [[ "$uid" =~ ^[0-9]+$ ]] && [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] || continue
+    case "$home" in /home/?*) ;; *) continue ;; esac
+    [ -d "$home" ] || continue
+    HOME_DIRS+=("$home")
+    HOME_SIZE[$home]="$(dir_size "$home")"
+    printf '%s\t%s\t%s\n' "$user" "$home" "${HOME_SIZE[$home]}" >> "$RAW/home-dirs.tsv"
+  done < <(getent passwd 2>/dev/null || cat /etc/passwd)
 }
 
 # ---------------------------------------------------------------------------
@@ -494,6 +538,24 @@ write_report() {
       echo
     fi
 
+    # --- Home directories ---
+    echo "## Home directories"
+    echo
+    if [ "${#HOME_DIRS[@]}" -gt 0 ]; then
+      local hd hsize
+      for hd in "${HOME_DIRS[@]}"; do
+        hsize="${HOME_SIZE[$hd]:-?}"
+        if is_large "$hsize"; then
+          echo "- \`${hd}\` (${hsize}) - LARGE: generated commented out; consider having Borg read it directly"
+        else
+          echo "- \`${hd}\` (${hsize}) - copied into the snapshot, excluding \`.cache/\`"
+        fi
+      done
+    else
+      echo "None found."
+    fi
+    echo
+
     # --- Tailscale ---
     echo "## Tailscale"
     echo
@@ -567,6 +629,15 @@ generate_prep_script() {
   local out="${OUT_DIR}/borg-prep-appdata-${NAME}.sh"
   echo "==> Generating ${out}"
 
+  # Home dirs that are copied whole (not LARGE). App dirs and compose projects inside one are
+  # skipped below, so nothing is copied into the snapshot twice.
+  measure_homes
+  local h
+  COPIED_HOMES=()
+  for h in "${HOME_DIRS[@]}"; do
+    is_large "${HOME_SIZE[$h]}" || COPIED_HOMES+=("$h")
+  done
+
   cat > "$out" <<EOF
 #!/usr/bin/env bash
 
@@ -579,6 +650,9 @@ generate_prep_script() {
 # staged in a temporary directory and atomically moved to the "latest" location for
 # Borg to pick up. Run as root; backup data is protected with strict permissions (umask 077).
 #
+# Output: timestamped progress lines on stdout, warnings on stderr, and a summary table
+# at the end. The summary is also saved in the snapshot as metadata/prep-summary.txt.
+#
 # Usage:
 #   sudo ./borg-prep-appdata-${NAME}.sh
 # Deploy to /usr/local/sbin/borg-prep-appdata-${NAME}.sh on ${NAME} and ensure Borg
@@ -589,6 +663,7 @@ generate_prep_script() {
 set -Eeuo pipefail
 umask 077
 
+HOST_NAME="${NAME}"
 BASE="/var/backups/borg-apps"
 LATEST="\${BASE}/latest"
 
@@ -597,86 +672,226 @@ TMP="\$(mktemp -d "\${BASE}/.tmp.XXXXXX")"
 trap 'rm -rf "\$TMP"' EXIT
 
 mkdir -p "\$TMP"/{metadata,docker,apps,databases,native,tailscale,kubernetes}
+EOF
 
-echo "Preparing app-consistent backup data for ${NAME}..."
+  cat >> "$out" <<'EOF'
 
 # -----------------------------
-# System and Docker inventory
+# Logging and summary helpers
 # -----------------------------
+RUN_START=$(date +%s)
+WARNINGS=0
+declare -a SUMMARY_ROWS=()   # "label|status|files|bytes|seconds"
+declare -a WARN_LINES=()
+SEC_LABEL="" SEC_PATHS="" SEC_START=0 SEC_STATUS=""
+
+log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+warn() {
+  WARNINGS=$((WARNINGS + 1))
+  WARN_LINES+=("${SEC_LABEL:-general}: $*")
+  if [ -n "$SEC_LABEL" ]; then SEC_STATUS="WARN"; fi
+  printf '[%s] WARN: %s\n' "$(date +%H:%M:%S)" "$*" >&2
+}
+
+# Section paths are relative to $TMP; stats tolerate missing paths so set -e never trips here.
+section_start() {
+  SEC_LABEL="$1"; SEC_PATHS="$2"; SEC_START=$(date +%s); SEC_STATUS="OK"
+  log "${SEC_LABEL}..."
+}
+section_skip() {
+  log "${SEC_LABEL}: skipped ($*)"
+  SEC_STATUS="SKIP"
+}
+section_end() {
+  local files=0 bytes=0 p n b
+  for p in $SEC_PATHS; do
+    [ -e "$TMP/$p" ] || continue
+    n=$(find "$TMP/$p" -type f 2>/dev/null | wc -l) || n=0
+    b=$(du -sb "$TMP/$p" 2>/dev/null | awk '{print $1}') || b=0
+    files=$((files + n)); bytes=$((bytes + ${b:-0}))
+  done
+  SUMMARY_ROWS+=("${SEC_LABEL}|${SEC_STATUS}|${files}|${bytes}|$(( $(date +%s) - SEC_START ))")
+  SEC_LABEL=""
+}
+
+human() { numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || echo "${1:-0}B"; }
+
+print_summary() {
+  local row label status files bytes secs tot_files=0 tot_bytes=0 w line
+  line="$(printf '%.0s-' {1..72})"
+  echo "$line"
+  printf ' %s pre-backup snapshot - %s\n' "$HOST_NAME" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  echo "$line"
+  printf ' %-36s %-6s %8s %10s %6s\n' "Section" "Status" "Files" "Size" "Time"
+  printf ' %-36s %-6s %8s %10s %6s\n' "-------" "------" "-----" "----" "----"
+  for row in "${SUMMARY_ROWS[@]}"; do
+    IFS='|' read -r label status files bytes secs <<< "$row"
+    printf ' %-36s %-6s %8s %10s %5ss\n' "$label" "$status" "$files" "$(human "$bytes")" "$secs"
+    tot_files=$((tot_files + files)); tot_bytes=$((tot_bytes + bytes))
+  done
+  echo "$line"
+  printf ' %-36s %-6s %8s %10s %5ss\n' "Total" "" "$tot_files" "$(human "$tot_bytes")" "$(( $(date +%s) - RUN_START ))"
+  echo
+  echo " Snapshot:  ${LATEST}"
+  echo " Warnings:  ${WARNINGS}"
+  for w in "${WARN_LINES[@]}"; do echo "   - $w"; done
+  echo "$line"
+}
+
+# rsync SRC into DEST with any extra rsync options. Exit 24 (files vanished mid-copy) is normal
+# on live data and stays silent; any other failure is a warning and the run continues.
+copy_tree() {
+  local src="$1" dest="$2" rc
+  shift 2
+  rsync -a --delete "$@" "$src" "$dest" \
+    || { rc=$?; [ "$rc" -eq 24 ] || warn "rsync of $src exited $rc (partial copy)"; }
+}
+
+trap 'printf "[%s] ERROR: %s failed at line %s: %s\n" "$(date +%H:%M:%S)" "${SEC_LABEL:-prep script}" "$LINENO" "$BASH_COMMAND" >&2' ERR
+
+log "Preparing app-consistent backup data for ${HOST_NAME}..."
+
+# -----------------------------
+# System inventory
+# -----------------------------
+section_start "System inventory" "metadata"
 {
   date -Is
   hostnamectl || true
   uname -a || true
   cat /etc/os-release || true
-} > "\$TMP/metadata/system-info.txt"
+} > "$TMP/metadata/system-info.txt"
 
-dpkg-query -W -f='\${binary:Package}\t\${Version}\n' > "\$TMP/metadata/dpkg-packages.tsv" 2>/dev/null || true
+dpkg-query -W -f='${binary:Package}\t${Version}\n' > "$TMP/metadata/dpkg-packages.tsv" 2>/dev/null || true
+section_end
 EOF
 
   # --- Docker inventory + compose configs ---
   if [ "$DOCKER_PRESENT" -eq 1 ]; then
     cat >> "$out" <<'EOF'
 
-docker ps -a --no-trunc > "$TMP/docker/docker-ps-a.txt" 2>/dev/null || true
-docker images --digests > "$TMP/docker/docker-images.txt" 2>/dev/null || true
-docker volume ls > "$TMP/docker/docker-volumes.txt" 2>/dev/null || true
-docker network ls > "$TMP/docker/docker-networks.txt" 2>/dev/null || true
+# -----------------------------
+# Docker inventory
+# -----------------------------
+section_start "Docker inventory" "docker"
+if command -v docker >/dev/null 2>&1; then
+  docker ps -a --no-trunc > "$TMP/docker/docker-ps-a.txt" 2>/dev/null || true
+  docker images --digests > "$TMP/docker/docker-images.txt" 2>/dev/null || true
+  docker volume ls > "$TMP/docker/docker-volumes.txt" 2>/dev/null || true
+  docker network ls > "$TMP/docker/docker-networks.txt" 2>/dev/null || true
 
-docker inspect $(docker ps -aq) > "$TMP/docker/docker-inspect-all.json" 2>/dev/null || true
+  docker inspect $(docker ps -aq) > "$TMP/docker/docker-inspect-all.json" 2>/dev/null || true
+
+  # Docker volume metadata only - the actual /var/lib/docker/volumes path is backed up by Borg directly.
+  if [ -d /var/lib/docker/volumes ]; then
+    find /var/lib/docker/volumes -maxdepth 3 -mindepth 1 -print > "$TMP/docker/docker-volume-tree.txt" 2>/dev/null || true
+  fi
+else
+  section_skip "docker not installed"
+fi
+section_end
 EOF
-    local p wdir slug
+    local p wdir slug inhome
     for p in "${!COMPOSE_PROJECTS[@]}"; do
       wdir="${COMPOSE_PROJECTS[$p]}"
       slug="$(slugify "$wdir")"
+      if inhome="$(home_containing "$wdir")"; then
+        cat >> "$out" <<EOF
+
+# Compose project ${p} (${wdir}) is inside ${inhome}, copied below with the home directory.
+EOF
+        continue
+      fi
       cat >> "$out" <<EOF
 
 # -----------------------------
 # Compose project: ${p}
 # -----------------------------
+section_start "Compose project ${p}" "apps/${slug}"
 if [ -d ${wdir} ]; then
-  rsync -a --delete \\
-    --exclude='*.db-wal' \\
-    --exclude='*.db-shm' \\
-    ${wdir}/ "\$TMP/apps/${slug}/"
+  copy_tree ${wdir}/ "\$TMP/apps/${slug}/" --exclude='*.db-wal' --exclude='*.db-shm'
+else
+  section_skip "${wdir} not found"
 fi
+section_end
 EOF
     done
   fi
 
+  # --- Home directories ---
+  local hslug hsize
+  for h in "${HOME_DIRS[@]}"; do
+    hslug="$(slugify "$h")"
+    hsize="${HOME_SIZE[$h]}"
+    if is_large "$hsize"; then
+      cat >> "$out" <<EOF
+
+# -----------------------------
+# Home directory: ${h} (LARGE: ${hsize} - review before enabling; consider having Borg
+# read this path directly instead of duplicating it into the snapshot)
+# -----------------------------
+section_start "Home directory (${h})" "apps/${hslug}"
+section_skip "LARGE, disabled in this script"
+# copy_tree ${h}/ "\$TMP/apps/${hslug}/" --exclude='*.db-wal' --exclude='*.db-shm' --exclude='.cache/'
+section_end
+EOF
+    else
+      cat >> "$out" <<EOF
+
+# -----------------------------
+# Home directory: ${h} (${hsize})
+# -----------------------------
+section_start "Home directory (${h})" "apps/${hslug}"
+if [ -d ${h} ]; then
+  copy_tree ${h}/ "\$TMP/apps/${hslug}/" --exclude='*.db-wal' --exclude='*.db-shm' --exclude='.cache/'
+else
+  section_skip "${h} not found"
+fi
+section_end
+EOF
+    fi
+  done
+
   # --- Bind-mounted app dirs ---
-  local d slug size
+  local d size
   for d in "${APP_DIRS[@]}"; do
     slug="$(slugify "$d")"
+    if inhome="$(home_containing "$d")"; then
+      cat >> "$out" <<EOF
+
+# App data ${d} is inside ${inhome}, copied above with the home directory.
+EOF
+      continue
+    fi
     size="$(dir_size "$d")"
-    case "$size" in
-      *T|[0-9][0-9]G|[0-9][0-9][0-9]G)
-        # Very large directory: include commented out so the operator decides.
-        cat >> "$out" <<EOF
+    if is_large "$size"; then
+      # Very large directory: include commented out so the operator decides.
+      cat >> "$out" <<EOF
 
 # -----------------------------
 # App data: ${d} (LARGE: ${size} - review before enabling; consider having Borg
 # read this path directly instead of duplicating it into the snapshot)
 # -----------------------------
-# if [ -d ${d} ]; then
-#   rsync -a --delete --exclude='*.db-wal' --exclude='*.db-shm' ${d}/ "\$TMP/apps/${slug}/"
-# fi
+section_start "App data (${d})" "apps/${slug}"
+section_skip "LARGE, disabled in this script"
+# copy_tree ${d}/ "\$TMP/apps/${slug}/" --exclude='*.db-wal' --exclude='*.db-shm'
+section_end
 EOF
-        ;;
-      *)
-        cat >> "$out" <<EOF
+    else
+      cat >> "$out" <<EOF
 
 # -----------------------------
 # App data: ${d} (${size})
 # -----------------------------
+section_start "App data (${d})" "apps/${slug}"
 if [ -d ${d} ]; then
-  rsync -a --delete \\
-    --exclude='*.db-wal' \\
-    --exclude='*.db-shm' \\
-    ${d}/ "\$TMP/apps/${slug}/"
+  copy_tree ${d}/ "\$TMP/apps/${slug}/" --exclude='*.db-wal' --exclude='*.db-shm'
+else
+  section_skip "${d} not found"
 fi
+section_end
 EOF
-        ;;
-    esac
+    fi
   done
 
   # --- Containerized DB dumps ---
@@ -693,11 +908,15 @@ EOF
 # -----------------------------
 # PostgreSQL dump: container ${cname}
 # -----------------------------
+section_start "PostgreSQL dump (${cname})" "databases/${cname}-pg_dumpall.sql"
 if docker ps --format '{{.Names}}' | grep -qx '${cname}'; then
   docker exec '${cname}' pg_dumpall -U '${pguser:-postgres}' \\
     > "\$TMP/databases/${cname}-pg_dumpall.sql" 2>/dev/null \\
-    || echo "WARN: pg_dumpall failed for ${cname}"
+    || warn "pg_dumpall failed for ${cname}"
+else
+  section_skip "container ${cname} not running"
 fi
+section_end
 EOF
         ;;
       mysql|mariadb)
@@ -706,12 +925,16 @@ EOF
 # -----------------------------
 # ${kind} dump: container ${cname} (${detail})
 # -----------------------------
+section_start "${kind} dump (${cname})" "databases/${cname}-all-databases.sql"
 if docker ps --format '{{.Names}}' | grep -qx '${cname}'; then
   docker exec '${cname}' sh -c \\
     'exec mysqldump --all-databases --single-transaction -uroot -p"\${MYSQL_ROOT_PASSWORD:-\$MARIADB_ROOT_PASSWORD}"' \\
     > "\$TMP/databases/${cname}-all-databases.sql" 2>/dev/null \\
-    || echo "WARN: mysqldump failed for ${cname} - check credentials"
+    || warn "mysqldump failed for ${cname} - check credentials"
+else
+  section_skip "container ${cname} not running"
 fi
+section_end
 EOF
         ;;
       mongo)
@@ -720,11 +943,15 @@ EOF
 # -----------------------------
 # MongoDB dump: container ${cname}
 # -----------------------------
+section_start "MongoDB dump (${cname})" "databases/${cname}-mongodump.archive"
 if docker ps --format '{{.Names}}' | grep -qx '${cname}'; then
   docker exec '${cname}' mongodump --archive --quiet \\
     > "\$TMP/databases/${cname}-mongodump.archive" 2>/dev/null \\
-    || echo "WARN: mongodump failed for ${cname} - add credentials if auth is enabled"
+    || warn "mongodump failed for ${cname} - add credentials if auth is enabled"
+else
+  section_skip "container ${cname} not running"
 fi
+section_end
 EOF
         ;;
       redis)
@@ -734,10 +961,14 @@ EOF
 # Redis persistence flush: container ${cname}
 # (dump.rdb itself is captured via the volume/bind backup)
 # -----------------------------
+section_start "Redis save (${cname})" ""
 if docker ps --format '{{.Names}}' | grep -qx '${cname}'; then
-  docker exec '${cname}' redis-cli BGSAVE >/dev/null 2>&1 || true
+  docker exec '${cname}' redis-cli BGSAVE >/dev/null 2>&1 || warn "redis-cli BGSAVE failed for ${cname}"
   sleep 2
+else
+  section_skip "container ${cname} not running"
 fi
+section_end
 EOF
         ;;
       influxdb)
@@ -746,12 +977,16 @@ EOF
 # -----------------------------
 # InfluxDB backup: container ${cname}
 # -----------------------------
+section_start "InfluxDB backup (${cname})" "databases/${cname}-influx-backup"
 if docker ps --format '{{.Names}}' | grep -qx '${cname}'; then
   docker exec '${cname}' influx backup /tmp/influx-backup >/dev/null 2>&1 \\
     && docker cp '${cname}:/tmp/influx-backup' "\$TMP/databases/${cname}-influx-backup" 2>/dev/null \\
     && docker exec '${cname}' rm -rf /tmp/influx-backup \\
-    || echo "WARN: influx backup failed for ${cname} (v1.x uses 'influxd backup' instead)"
+    || warn "influx backup failed for ${cname} (v1.x uses 'influxd backup' instead)"
+else
+  section_skip "container ${cname} not running"
 fi
+section_end
 EOF
         ;;
       search|other)
@@ -761,6 +996,9 @@ EOF
 # ${cname}: ${detail}
 # No automatic dump generated - handle per engine documentation.
 # -----------------------------
+section_start "Database (${cname})" ""
+section_skip "no automatic dump - see the comment in this script"
+section_end
 EOF
         ;;
     esac
@@ -772,75 +1010,98 @@ EOF
     fslug="$(slugify "$f")"
     cat >> "$out" <<EOF
 
+# -----------------------------
 # SQLite-safe backup of ${f}
-if [ -f '${f}' ]; then
+# -----------------------------
+section_start "SQLite backup (${f})" "databases/${fslug}.sqlite-backup"
+if [ ! -f '${f}' ]; then
+  section_skip "${f} not found"
+elif ! command -v sqlite3 >/dev/null 2>&1; then
+  warn "sqlite3 not installed - ${f} not captured (apt install sqlite3)"
+else
   sqlite3 '${f}' "PRAGMA wal_checkpoint(FULL);" >/dev/null 2>&1 || true
-  sqlite3 '${f}' ".backup '\$TMP/databases/${fslug}.sqlite-backup'" || true
+  sqlite3 '${f}' ".backup '\$TMP/databases/${fslug}.sqlite-backup'" \\
+    || warn "sqlite3 backup of ${f} failed"
 fi
+section_end
 EOF
   done
 
   # --- Native services ---
-  local svc kind paths pth pslug
+  local svc paths pth pslug secpaths
   for e in "${NATIVE_SERVICES[@]}"; do
     svc="$(echo "$e" | cut -d'|' -f1)"
     kind="$(echo "$e" | cut -d'|' -f2)"
     paths="$(echo "$e" | cut -d'|' -f3)"
+    # Collect this service's snapshot paths first, so the summary row can count them.
     case "$kind" in
-      postgres)
-        cat >> "$out" <<EOF
-
-# -----------------------------
-# Native PostgreSQL (${svc}) - full cluster dump
-# -----------------------------
-if command -v pg_dumpall >/dev/null 2>&1; then
-  su - postgres -c pg_dumpall > "\$TMP/native/postgresql-pg_dumpall.sql" 2>/dev/null \\
-    || echo "WARN: native pg_dumpall failed"
-fi
-EOF
-        ;;
-      mysql|mariadb)
-        cat >> "$out" <<EOF
-
-# -----------------------------
-# Native ${kind} (${svc}) - full dump (uses /root/.my.cnf or debian-sys-maint auth)
-# -----------------------------
-if command -v mysqldump >/dev/null 2>&1; then
-  mysqldump --all-databases --single-transaction > "\$TMP/native/${kind}-all-databases.sql" 2>/dev/null \\
-    || mysqldump --defaults-file=/etc/mysql/debian.cnf --all-databases --single-transaction \\
-         > "\$TMP/native/${kind}-all-databases.sql" 2>/dev/null \\
-    || echo "WARN: native mysqldump failed - configure credentials in /root/.my.cnf"
-fi
-EOF
-        ;;
-      mongo)
-        cat >> "$out" <<EOF
-
-# -----------------------------
-# Native MongoDB (${svc}) - dump
-# -----------------------------
-if command -v mongodump >/dev/null 2>&1; then
-  mongodump --archive --quiet > "\$TMP/native/mongodump.archive" 2>/dev/null \\
-    || echo "WARN: native mongodump failed"
-fi
-EOF
-        ;;
+      postgres)      secpaths="native/postgresql-pg_dumpall.sql" ;;
+      mysql|mariadb) secpaths="native/${kind}-all-databases.sql" ;;
+      mongo)         secpaths="native/mongodump.archive" ;;
+      *)             secpaths="" ;;
     esac
-    # config/data path copies (config dirs only; big data dirs are covered by dumps or Borg direct paths)
+    local -a copy_paths=()
     for pth in $(echo "$paths" | tr ':' ' '); do
       [ -e "$pth" ] || continue
       case "$pth" in
         /var/lib/postgresql|/var/lib/mysql|/var/lib/mongodb) continue ;; # dump covers these; raw copy of live DB is unsafe
       esac
+      copy_paths+=("$pth")
+      secpaths="${secpaths:+$secpaths }native/$(slugify "$pth")"
+    done
+
+    cat >> "$out" <<EOF
+
+# -----------------------------
+# Native service: ${svc} (${kind})
+# -----------------------------
+section_start "Native service ${svc}" "${secpaths}"
+EOF
+    case "$kind" in
+      postgres)
+        cat >> "$out" <<EOF
+if command -v pg_dumpall >/dev/null 2>&1; then
+  su - postgres -c pg_dumpall > "\$TMP/native/postgresql-pg_dumpall.sql" 2>/dev/null \\
+    || warn "native pg_dumpall failed"
+else
+  warn "pg_dumpall not found - PostgreSQL not dumped"
+fi
+EOF
+        ;;
+      mysql|mariadb)
+        cat >> "$out" <<EOF
+# Full dump; uses /root/.my.cnf, then debian-sys-maint auth.
+if command -v mysqldump >/dev/null 2>&1; then
+  mysqldump --all-databases --single-transaction > "\$TMP/native/${kind}-all-databases.sql" 2>/dev/null \\
+    || mysqldump --defaults-file=/etc/mysql/debian.cnf --all-databases --single-transaction \\
+         > "\$TMP/native/${kind}-all-databases.sql" 2>/dev/null \\
+    || warn "native mysqldump failed - configure credentials in /root/.my.cnf"
+else
+  warn "mysqldump not found - ${kind} not dumped"
+fi
+EOF
+        ;;
+      mongo)
+        cat >> "$out" <<EOF
+if command -v mongodump >/dev/null 2>&1; then
+  mongodump --archive --quiet > "\$TMP/native/mongodump.archive" 2>/dev/null \\
+    || warn "native mongodump failed"
+else
+  warn "mongodump not found - MongoDB not dumped"
+fi
+EOF
+        ;;
+    esac
+    # Config dirs only; big data dirs are covered by dumps or Borg direct paths.
+    for pth in "${copy_paths[@]}"; do
       pslug="$(slugify "$pth")"
       cat >> "$out" <<EOF
-
-# Config/data for ${svc}: ${pth}
 if [ -e '${pth}' ]; then
-  rsync -a --delete '${pth}' "\$TMP/native/${pslug}/" 2>/dev/null || true
+  copy_tree '${pth}' "\$TMP/native/${pslug}/"
 fi
 EOF
     done
+    echo "section_end" >> "$out"
   done
 
   # --- Tailscale ---
@@ -850,10 +1111,14 @@ EOF
 # -----------------------------
 # Tailscale state (node identity/keys - SECRET; do not restore to a second machine)
 # -----------------------------
+section_start "Tailscale state" "tailscale"
 tailscale status > "$TMP/tailscale/status.txt" 2>/dev/null || true
 if [ -d /var/lib/tailscale ]; then
-  rsync -a --delete /var/lib/tailscale/ "$TMP/tailscale/state/"
+  copy_tree /var/lib/tailscale/ "$TMP/tailscale/state/"
+else
+  section_skip "/var/lib/tailscale not found"
 fi
+section_end
 EOF
   fi
 
@@ -865,20 +1130,36 @@ EOF
 # -----------------------------
 # Kubernetes (k3s): datastore snapshot + config
 # -----------------------------
+section_start "Kubernetes (k3s)" "kubernetes"
 if command -v k3s >/dev/null 2>&1; then
   # etcd datastore: use the built-in snapshot; SQLite datastore: safe-copy the db.
+  # On a worker node neither exists - cluster state lives on the k3s server.
   if [ -d /var/lib/rancher/k3s/server/db/etcd ]; then
     k3s etcd-snapshot save --dir "$TMP/kubernetes/etcd-snapshots" >/dev/null 2>&1 \
-      || echo "WARN: k3s etcd-snapshot failed"
+      || warn "k3s etcd-snapshot failed"
   elif [ -f /var/lib/rancher/k3s/server/db/state.db ]; then
-    sqlite3 /var/lib/rancher/k3s/server/db/state.db \
-      ".backup '$TMP/kubernetes/k3s-state.db.sqlite-backup'" 2>/dev/null || true
+    if command -v sqlite3 >/dev/null 2>&1; then
+      sqlite3 /var/lib/rancher/k3s/server/db/state.db \
+        ".backup '$TMP/kubernetes/k3s-state.db.sqlite-backup'" 2>/dev/null \
+        || warn "sqlite3 backup of k3s state.db failed"
+    else
+      warn "sqlite3 not installed - k3s state.db not captured (apt install sqlite3)"
+    fi
   fi
   kubectl get all -A > "$TMP/kubernetes/resources-all.txt" 2>/dev/null || true
+  if [ -d /etc/rancher/k3s ]; then
+    copy_tree /etc/rancher/k3s/ "$TMP/kubernetes/etc-rancher-k3s/"
+  fi
+  if [ -d /var/lib/rancher/k3s/server/manifests ]; then
+    copy_tree /var/lib/rancher/k3s/server/manifests/ "$TMP/kubernetes/manifests/"
+  fi
+  if [ -f /var/lib/rancher/k3s/server/token ]; then
+    install -m 600 /var/lib/rancher/k3s/server/token "$TMP/kubernetes/server-token"
+  fi
+else
+  section_skip "k3s not installed"
 fi
-[ -d /etc/rancher/k3s ] && rsync -a --delete /etc/rancher/k3s/ "$TMP/kubernetes/etc-rancher-k3s/"
-[ -d /var/lib/rancher/k3s/server/manifests ] && rsync -a --delete /var/lib/rancher/k3s/server/manifests/ "$TMP/kubernetes/manifests/"
-[ -f /var/lib/rancher/k3s/server/token ] && install -m 600 /var/lib/rancher/k3s/server/token "$TMP/kubernetes/server-token"
+section_end
 EOF
       ;;
     microk8s)
@@ -887,15 +1168,19 @@ EOF
 # -----------------------------
 # Kubernetes (microk8s)
 # -----------------------------
+section_start "Kubernetes (microk8s)" "kubernetes"
 if command -v microk8s >/dev/null 2>&1; then
   microk8s kubectl get all -A > "$TMP/kubernetes/resources-all.txt" 2>/dev/null || true
 fi
 # Note: for a consistent dqlite datastore backup, prefer 'microk8s.backup' tooling.
 # Raw copy below captures configs/certs; the datastore may need microk8s stopped.
 if [ -d /var/snap/microk8s/current/credentials ]; then
-  rsync -a --delete /var/snap/microk8s/current/credentials/ "$TMP/kubernetes/credentials/"
-  rsync -a --delete /var/snap/microk8s/current/certs/ "$TMP/kubernetes/certs/" 2>/dev/null || true
+  copy_tree /var/snap/microk8s/current/credentials/ "$TMP/kubernetes/credentials/"
+  if [ -d /var/snap/microk8s/current/certs ]; then
+    copy_tree /var/snap/microk8s/current/certs/ "$TMP/kubernetes/certs/"
+  fi
 fi
+section_end
 EOF
       ;;
     kubeadm)
@@ -904,35 +1189,30 @@ EOF
 # -----------------------------
 # Kubernetes (kubeadm): /etc/kubernetes + etcd snapshot
 # -----------------------------
-[ -d /etc/kubernetes ] && rsync -a --delete /etc/kubernetes/ "$TMP/kubernetes/etc-kubernetes/"
+section_start "Kubernetes (kubeadm)" "kubernetes"
+if [ -d /etc/kubernetes ]; then
+  copy_tree /etc/kubernetes/ "$TMP/kubernetes/etc-kubernetes/"
+fi
 if command -v etcdctl >/dev/null 2>&1; then
   ETCDCTL_API=3 etcdctl snapshot save "$TMP/kubernetes/etcd-snapshot.db" \
     --endpoints=https://127.0.0.1:2379 \
     --cacert=/etc/kubernetes/pki/etcd/ca.crt \
     --cert=/etc/kubernetes/pki/etcd/server.crt \
     --key=/etc/kubernetes/pki/etcd/server.key 2>/dev/null \
-    || echo "WARN: etcd snapshot failed"
+    || warn "etcd snapshot failed"
 fi
 kubectl get all -A > "$TMP/kubernetes/resources-all.txt" 2>/dev/null || true
+section_end
 EOF
       ;;
   esac
 
-  # --- Docker volume metadata + atomic publish (same pattern as smiddleware) ---
-  if [ "$DOCKER_PRESENT" -eq 1 ]; then
-    cat >> "$out" <<'EOF'
-
-# -----------------------------
-# Docker volume metadata only
-# The actual /var/lib/docker/volumes path is backed up by Borg directly.
-# -----------------------------
-if [ -d /var/lib/docker/volumes ]; then
-  find /var/lib/docker/volumes -maxdepth 3 -mindepth 1 -print > "$TMP/docker/docker-volume-tree.txt" 2>/dev/null || true
-fi
-EOF
-  fi
-
   cat >> "$out" <<'EOF'
+
+# -----------------------------
+# Summary (saved into the snapshot, then printed)
+# -----------------------------
+print_summary > "$TMP/metadata/prep-summary.txt"
 
 # -----------------------------
 # Atomic publish of latest snapshot
@@ -946,9 +1226,9 @@ mv "$TMP" "$LATEST"
 trap - EXIT
 rm -rf "${BASE}/previous"
 
-EOF
-  cat >> "$out" <<EOF
-echo "App-data snapshot ready at \${LATEST}"
+log "App-data snapshot ready at ${LATEST}"
+echo
+cat "${LATEST}/metadata/prep-summary.txt"
 EOF
 
   chmod +x "$out"
@@ -1245,7 +1525,7 @@ save_state() {
     echo "# Collected: $(date -Is)"
     declare -p DOCKER_PRESENT COMPOSE_PROJECTS APP_DIRS DB_CONTAINERS SQLITE_FILES \
       NATIVE_SERVICES STANDALONE_CONTAINERS TAILSCALE_PRESENT TAILSCALE_STATE \
-      K8S_KIND K8S_PATHS OTHER_PLATFORMS
+      K8S_KIND K8S_PATHS OTHER_PLATFORMS HOME_DIRS
   } > "$RAW/survey-state.sh"
 }
 
@@ -1290,9 +1570,14 @@ if [ -n "$FROM_DIR" ]; then
   source "$STATE_FILE"
   echo "==> Reusing survey data from ${FROM_DIR} (collected: $(sed -n 's/^# Collected: //p' "$STATE_FILE"))"
   echo "    Skipping collection; generated scripts will land in ${OUT_DIR}/"
+  if ! grep -q 'HOME_DIRS' "$STATE_FILE"; then
+    echo "    NOTE: this survey predates home directory detection, so no home directories will be"
+    echo "    included. Re-run the survey to pick them up."
+  fi
 else
   mkdir -p "$RAW"
   collect_system
+  collect_homes
   collect_docker
   collect_native
   collect_tailscale

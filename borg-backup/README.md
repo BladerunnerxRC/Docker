@@ -340,6 +340,7 @@ What it inspects:
 - Docker: containers (Compose-managed and standalone `docker run` containers), images, volumes, networks, Compose projects, bind-mounted app data dirs (with sizes)
 - Databases in containers (Postgres, MySQL/MariaDB, MongoDB, Redis, InfluxDB, Elasticsearch, ...) and SQLite files in app dirs
 - Applications outside Docker via systemd (web servers, databases, media servers, monitoring, DNS/DHCP, VPN, ...)
+- Home directories of login users (UID 1000+ under `/home`)
 - Tailscale state, Kubernetes (k3s / microk8s / kubeadm), LXD, libvirt/KVM, ZFS
 
 Usage (run on the target server):
@@ -372,7 +373,7 @@ Output (in `./borg-survey-<name>-<timestamp>/`):
 
 - `REPORT.md` — what was found, what Borg should back up, consistency caveats, suggested excludes
 - `raw/` — raw inventory data backing the report
-- `borg-prep-appdata-<name>.sh` — generated prep script following the same staged/atomic-publish pattern as the existing per-host scripts, with DB-safe dumps (pg_dumpall, mysqldump, mongodump, SQLite `.backup`, k3s etcd-snapshot) for everything detected
+- `borg-prep-appdata-<name>.sh` — generated prep script following the same staged/atomic-publish pattern as the existing per-host scripts, with DB-safe dumps (pg_dumpall, mysqldump, mongodump, SQLite `.backup`, k3s etcd-snapshot) for everything detected. It prints the same progress lines and summary table as the optiplex-three script and saves the table as `metadata/prep-summary.txt`. Home directories are copied without `.cache/`; app dirs and compose projects inside a copied home are not copied twice. A home or app dir of 10G or more is generated commented out (`SKIP` in the summary) so you decide whether to enable it
 - `BORG_UI-<name>-prep-appdata.sh` — generated Borg UI script-entity wrapper (SSH trigger)
 - `deploy-borg-prep-<name>.sh` — installs the prep script to `/usr/local/sbin`: backs up the old version, shows a diff, refuses the wrapper/CRLF/wrong host; `--test`, `--rollback`, `--list`, `--backup-only`
 
