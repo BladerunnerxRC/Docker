@@ -8,6 +8,142 @@
 
 This README documents only the borg-backup application in this folder, including its Docker Compose stack and local snapshot-prep scripts used by Borg.
 
+## Architecture
+
+### Infrastructure
+
+Borg UI runs on optiplex-docker and pulls each host's data over SSH. The repositories live on
+the Synology, one NFS share per backed-up host, mounted on optiplex-docker at
+`/mnt/borg_<host>` and inside the container at `/local/<host>`. Each host stages its snapshot
+in `/var/backups/borg-apps/latest` with `/usr/local/sbin/borg-prep-appdata-<host>.sh`. The
+container's other mounts are listed under [Host Path Mounts](#host-path-mounts).
+
+```mermaid
+%%{init: {"themeVariables": {"fontSize": "18px"}}}%%
+flowchart TB
+    ADMIN["Admin browser"]
+
+    subgraph docker["🐳 optiplex-docker"]
+        UI["borg-ui :8888<br/>+ redis cache"]
+    end
+
+    subgraph hosts["🖥️ Backed-up hosts"]
+        direction LR
+        SM["smiddleware<br/>.200.52"]
+        O2["optiplex-two<br/>.200.14"]
+        O3["optiplex-three<br/>.200.65 · k3s"]
+    end
+
+    subgraph nas["🗄️ Synology · .200.3"]
+        direction LR
+        REPOS[("Borg repos<br/>one share per host")]
+        SCRIPTS[("Prep script<br/>backups")]
+    end
+
+    ADMIN -->|"http"| UI
+    UI -->|"1. ssh: run prep script<br/>2. SSHFS: read files"| hosts
+    UI ==>|"NFSv4: borg create"| REPOS
+    hosts -.->|"deploy script"| SCRIPTS
+```
+
+### Backup flow
+
+What one host's backup plan does. The prep script builds the new snapshot in a temp directory,
+so a failed run leaves the previous `latest/` in place.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as Borg UI job
+    participant W as Pre-backup script entity<br/>BORG_UI-{host}-prep-appdata
+    participant H as Host · root
+    participant S as /var/backups/borg-apps
+    participant R as Repo /local/{host}/borg-repo-{host}
+
+    UI->>W: run before the backup, time-out 300 s
+    W->>H: ssh root@host borg-prep-appdata-{host}.sh
+    H->>S: create .tmp.XXXXXX, umask 077
+    loop each section
+        H->>S: system and Docker inventory, app dirs, DB dumps, k3s config
+    end
+    H->>S: write metadata/prep-summary.txt
+    H->>S: latest → previous, .tmp → latest, delete previous
+    Note over H,S: On any error the trap deletes .tmp and latest/ is unchanged
+    H-->>W: exit status, progress and summary table in the job log
+    W-->>UI: done
+    UI->>H: SSHFS mount the plan's source paths
+    UI->>R: borg create latest/, /etc, /home and the plan's other paths
+    UI->>R: prune and compact
+```
+
+### Prep script deploy and rollback
+
+How a new or regenerated prep script reaches `/usr/local/sbin` on its host. All paths go through
+`deploy-borg-prep-{host}.sh`, so the same checks apply to a survey deploy, a manual deploy and
+a rollback.
+
+```mermaid
+flowchart TD
+    SV["borg-backup-survey.sh<br/>survey and generate scripts"] --> Q{"Interactive root run<br/>on the target host?"}
+    Q -- no --> LATER["Deploy later:<br/>sudo ./deploy-borg-prep-{host}.sh --test"]
+    Q -- yes --> CH{"Choice 1 / 2 / N"}
+    CH -- N --> LATER
+    CH -- "1: back up only" --> BO["deploy --backup-only"]
+    CH -- "2: deploy" --> CHK
+    LATER --> CHK
+    RB["deploy --rollback<br/>newest backup that differs<br/>from the installed script"] --> CHK
+
+    BO --> MB1{"/mnt/backups mounted?"}
+    MB1 -- no --> FAIL["ERROR, exit 1<br/>nothing changed"]
+    MB1 -- yes --> BK1["Back up the installed script"] --> DONE1["Done, nothing installed"]
+
+    CHK["Safety checks<br/>root and the right host<br/>no CRLF, not the BORG_UI wrapper<br/>shebang line, stages into borg-apps<br/>bash -n passes"]
+    CHK -- fail --> FAIL
+    CHK -- pass --> SAME{"Same as the<br/>installed script?"}
+    SAME -- yes --> TEST
+    SAME -- no --> DIFF["Show diff"] --> MB2{"/mnt/backups mounted?"}
+    MB2 -- no --> FAIL
+    MB2 -- yes --> ASK{"Install? y/N"}
+    ASK -- N --> CANCEL["exit 3<br/>cancelled, nothing changed"]
+    ASK -- y --> BK2["Back up the installed script to<br/>/mnt/backups/borg-script-backups/{host}/YYYYmmdd-HHMMSS/<br/>keep the newest 10"]
+    BK2 --> INST["install -m 750 to /usr/local/sbin"] --> TEST{"--test?"}
+    TEST -- yes --> RUN["Run the installed prep script"]
+    TEST -- no --> DONE2["Done"]
+```
+
+### Restore flow
+
+Restores go through the `/restore` staging area on optiplex-docker, never straight over live
+data. Databases are restored from the dumps the prep script made, not from copied live files.
+
+```mermaid
+flowchart TD
+    START{"Is Borg UI working?"}
+    START -- yes --> PICK["Borg UI: open /local/{host}/borg-repo-{host}<br/>and pick an archive"]
+    START -- "no, optiplex-docker is lost" --> DR["Rebuild Borg UI from docker_compose.yml<br/>on any Docker host, mount the Synology shares<br/>and re-add the repos with their passphrases"]
+    DR --> PICK
+    PICK --> SUM["Check metadata/prep-summary.txt<br/>for warnings in that run"]
+    SUM --> EXT["Extract to /restore<br/>= /srv/borg-restore on optiplex-docker"]
+    EXT --> COPY["rsync to the target host"]
+    COPY --> WHAT{"What is being restored?"}
+
+    WHAT -- "/etc, compose dirs, home" --> CFG["Copy back in place,<br/>fix owner and mode"]
+    WHAT -- "Postgres" --> PG["Start an empty postgres container,<br/>psql -f databases/postgres-pg_dumpall.sql"]
+    WHAT -- "SQLite" --> SQ["Stop the app, replace the .db with<br/>its *.sqlite-backup file,<br/>delete stale -wal and -shm files"]
+    WHAT -- "Docker volume" --> VOL["Stop the stack, copy into<br/>/var/lib/docker/volumes/{volume}/_data"]
+    WHAT -- "Tailscale state" --> TS{"Same machine?"}
+    TS -- yes --> TSY["Restore /var/lib/tailscale"]
+    TS -- no --> TSN["Do not restore it:<br/>it holds node keys.<br/>Log the new machine in again"]
+    WHAT -- "k3s worker" --> K3["Restore /etc, including /etc/rancher/node/password,<br/>and rejoin. Cluster state is on the k3s server node"]
+    WHAT -- "The prep script itself" --> PS["sudo ./deploy-borg-prep-{host}.sh --rollback"]
+
+    CFG & PG & SQ & VOL & TSY & TSN & K3 --> CHECK["Start services, check health,<br/>then run a fresh backup"]
+```
+
+Without Borg UI, any Linux machine with `borg` installed can do the same: mount the host's
+Synology share and run `borg list` / `borg extract` against `borg-repo-<host>`. The repos use
+`repokey-blake2`, so the key is stored in the repo and only the passphrase is needed.
+
 ## Files
 
 - `docker_compose.yml`: Runs `ainullcode/borg-ui` (plus a `redis` archive-cache sidecar) with required mounts, FUSE capabilities, and hardening (resource limits, healthchecks, log rotation).
@@ -17,7 +153,9 @@ This README documents only the borg-backup application in this folder, including
 - `borg-prep-appdata-optiplex-two.sh`: The same, for **optiplex-two** (192.168.200.14). Generated by `borg-backup-survey.sh` on 2026-08-01.
 - `BORG_UI-optiplex-two-prep-appdata.sh`: Borg UI script-entity wrapper that triggers the optiplex-two prep script over SSH.
 - `borg-prep-appdata-optiplex-three.sh`: The same, for **optiplex-three** (192.168.200.65, k3s worker). Generated by `borg-backup-survey.sh` on 2026-10-05.
+- `deploy-borg-prep-optiplex-three.sh`: Installs the optiplex-three prep script into `/usr/local/sbin` with a backup, diff and safety checks.
 - `BORG_UI-optiplex-three-prep-appdata.sh`: Borg UI script-entity wrapper that triggers the optiplex-three prep script over SSH.
+- `pull-borg-scripts.sh`: Downloads a host's prep and deploy scripts, the survey script and this README from GitHub into `/home/thomas/borg-backup-scripts`, keeping a dated copy on the Synology share.
 - `borg-backup-survey.sh`: Surveys an Ubuntu server (Docker, databases, non-Docker apps, Tailscale, Kubernetes, etc.), reports what Borg can back up, and optionally generates per-server versions of the two scripts above.
 
 ## Shell Script Reference
@@ -162,7 +300,33 @@ k3s node identity, `/etc/rancher/node/password`), `/home/thomas`, and
 `/var/lib/rancher/k3s/storage` (local-path PV data; empty today, included so future PVs
 scheduled onto this node are caught).
 
+Each run prints timestamped progress, sends warnings to stderr, and ends with a summary table
+(files, size and time per section, plus a warning count). The same summary is saved in the
+snapshot as `metadata/prep-summary.txt`, so every archive carries it.
+
 Run manually with `sudo /usr/local/sbin/borg-prep-appdata-optiplex-three.sh`.
+
+Deploy or update it with `deploy-borg-prep-optiplex-three.sh`, run on optiplex-three with the
+prep script in the same folder:
+
+```bash
+sudo ./deploy-borg-prep-optiplex-three.sh --test   # checks, diff, backup, install, test run
+sudo ./deploy-borg-prep-optiplex-three.sh --list   # installed version + backups
+sudo ./deploy-borg-prep-optiplex-three.sh --rollback      # newest backup that differs from the installed script
+sudo ./deploy-borg-prep-optiplex-three.sh --backup-only   # back up the installed script, install nothing
+```
+
+It refuses the BORG_UI wrapper, CRLF line endings, syntax errors and the wrong host. Each backup
+goes in its own date-time folder on the Synology share, and the last 10 are kept per host:
+
+```text
+/mnt/backups/borg-script-backups/optiplex-three/20261006-143000/borg-prep-appdata-optiplex-three.sh
+```
+
+> [!IMPORTANT]
+> `/mnt/backups` must be mounted on the host being deployed. If it isn't, the deploy script
+> installs, backs up and rolls back nothing. Backups from before this change stay in
+> `/var/backups/borg-prep-scripts/` and are not used by `--rollback`.
 
 ### `borg-backup-survey.sh`
 
@@ -189,15 +353,67 @@ sudo ./borg-backup-survey.sh --from ./borg-survey-myserver-20260703-110322   # r
 
 Each survey saves its collected state to `raw/survey-state.sh`. On the next interactive run, if a previous survey directory for the host is found, the script asks whether to re-run the survey or reuse the existing raw data to generate the scripts (`--from DIR` does the same non-interactively).
 
+After generating scripts in an interactive root session on the target host, the survey asks what to do with the installed prep script:
+
+```text
+  1) Back up the installed script only
+  2) Back up the installed script and deploy the new one (shows a diff and asks first)
+  N) Nothing
+```
+
+Both options run the generated `deploy-borg-prep-<name>.sh`, so its safety checks and diff apply.
+If the deploy script fails (a refused file, the wrong host), the survey exits with its error code;
+answering N at the deploy script's own y/N prompt (exit 3) counts as a cancel, not a failure.
+
+`--name` and `--address` must be plain hostnames or IP addresses, because they are written into the
+generated scripts; anything else is refused before the survey starts.
+
 Output (in `./borg-survey-<name>-<timestamp>/`):
 
 - `REPORT.md` — what was found, what Borg should back up, consistency caveats, suggested excludes
 - `raw/` — raw inventory data backing the report
 - `borg-prep-appdata-<name>.sh` — generated prep script following the same staged/atomic-publish pattern as the existing per-host scripts, with DB-safe dumps (pg_dumpall, mysqldump, mongodump, SQLite `.backup`, k3s etcd-snapshot) for everything detected
 - `BORG_UI-<name>-prep-appdata.sh` — generated Borg UI script-entity wrapper (SSH trigger)
+- `deploy-borg-prep-<name>.sh` — installs the prep script to `/usr/local/sbin`: backs up the old version, shows a diff, refuses the wrapper/CRLF/wrong host; `--test`, `--rollback`, `--list`, `--backup-only`
 
 > [!IMPORTANT]
 > The generated scripts are starting points reflecting what was detected at survey time — review rsync sources, database credentials, and any commented-out large directories before deploying to `/usr/local/sbin/`.
+
+### `pull-borg-scripts.sh`
+
+Gets the current scripts onto a host from GitHub, so they arrive with Linux line endings (copies
+made on Windows have CRLF endings, which the deploy script refuses). It downloads four files from
+`borg-backup/` and installs nothing:
+
+- `borg-prep-appdata-<host>.sh` and `deploy-borg-prep-<host>.sh`
+- `borg-backup-survey.sh` and `README.md`
+
+The Borg UI wrapper is not pulled: it belongs in the Borg UI script entity, not on the host.
+
+First time, on the host:
+
+```bash
+mkdir -p ~/borg-backup-scripts && cd ~/borg-backup-scripts
+curl -fsSLO https://raw.githubusercontent.com/BladerunnerxRC/Docker/main/borg-backup/pull-borg-scripts.sh
+chmod 750 pull-borg-scripts.sh
+sudo ./pull-borg-scripts.sh                 # this host's files from main
+```
+
+After that:
+
+```bash
+sudo ~/borg-backup-scripts/pull-borg-scripts.sh [--branch BRANCH] [--name HOST]
+cd ~/borg-backup-scripts && sudo ./deploy-borg-prep-<host>.sh --test
+```
+
+- All four files are downloaded and checked (not empty, no CRLF, `#!` line, `bash -n`) before
+  anything is written. A missing file, or `/mnt/backups` not being mounted, stops it with nothing changed.
+- Each pull is copied to `/mnt/backups/borg-script-backups/<host>/github-pulls/<YYYYmmdd-HHMMSS>/`
+  with a `SOURCE.txt` recording the branch and commit. The newest 10 are kept. These copies are
+  separate from the deploy script's backups, and `--rollback` does not use them.
+- Files in `~/borg-backup-scripts` are owned by the folder's owner (thomas), not root: scripts
+  `750`, README `640`. The deploy script installs to `/usr/local/sbin` as `root:root 750`.
+- It prints each file as `new`, `updated` or `unchanged`.
 
 ## What This Stack Does
 
