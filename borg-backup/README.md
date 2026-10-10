@@ -385,13 +385,19 @@ Output (in `./borg-survey-<name>-<timestamp>/`):
 ### `pull-borg-scripts.sh`
 
 Gets the current scripts onto a host from GitHub, so they arrive with Linux line endings (copies
-made on Windows have CRLF endings, which the deploy script refuses). It downloads four files from
+made on Windows have CRLF endings, which the deploy script refuses). It downloads these files from
 `borg-backup/` and installs nothing:
 
 - `borg-prep-appdata-<host>.sh` and `deploy-borg-prep-<host>.sh`
 - `borg-backup-survey.sh` and `README.md`
+- `pull-borg-scripts.sh` itself, so the next pull uses the new version
+- `VERSION` and `CHANGELOG.md`, skipped on branches that don't have them
 
 The Borg UI wrapper is not pulled: it belongs in the Borg UI script entity, not on the host.
+
+Files from `main` go to `~/borg-backup-scripts`. Files from any other branch go to
+`~/borg-backup-scripts-<branch>` (for example `~/borg-backup-scripts-borg-dev`), so testing a
+branch never overwrites the files you normally deploy from. `--dest` overrides either.
 
 First time, on the host:
 
@@ -409,13 +415,28 @@ sudo ~/borg-backup-scripts/pull-borg-scripts.sh [--branch BRANCH] [--name HOST]
 cd ~/borg-backup-scripts && sudo ./deploy-borg-prep-<host>.sh --test
 ```
 
-- All four files are downloaded and checked (not empty, no CRLF, `#!` line, `bash -n`) before
+To test a branch, fetch that branch's pull script into its own folder first, so the branch's
+pull script is the one under test:
+
+```bash
+B=borg-dev
+mkdir -p ~/borg-backup-scripts-$B && cd ~/borg-backup-scripts-$B
+curl -fsSLO https://raw.githubusercontent.com/BladerunnerxRC/Docker/$B/borg-backup/pull-borg-scripts.sh
+chmod 750 pull-borg-scripts.sh
+sudo ./pull-borg-scripts.sh --branch $B     # lands in ~/borg-backup-scripts-borg-dev
+sudo ./deploy-borg-prep-$(hostname -s).sh --test
+```
+
+Deploying from a branch folder installs that branch's prep script. To go back, deploy from
+`~/borg-backup-scripts`, or run `--rollback`.
+
+- All files are downloaded and checked (not empty, no CRLF, `#!` line, `bash -n`) before
   anything is written. A missing file, or `/mnt/backups` not being mounted, stops it with nothing changed.
 - Each pull is copied to `/mnt/backups/borg-script-backups/<host>/github-pulls/<YYYYmmdd-HHMMSS>/`
   with a `SOURCE.txt` recording the branch and commit. The newest 10 are kept. These copies are
   separate from the deploy script's backups, and `--rollback` does not use them.
 - Files in `~/borg-backup-scripts` are owned by the folder's owner (thomas), not root: scripts
-  `750`, README `640`. The deploy script installs to `/usr/local/sbin` as `root:root 750`.
+  `750`, other files `640`. The deploy script installs to `/usr/local/sbin` as `root:root 750`.
 - It prints each file as `new`, `updated` or `unchanged`.
 
 ## What This Stack Does
