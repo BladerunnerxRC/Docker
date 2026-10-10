@@ -1,5 +1,6 @@
 # Borg-Backup Application
 
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
 ![BorgBackup](https://img.shields.io/badge/backup-borg-4C8B2B)
 ![Borg UI](https://img.shields.io/badge/app-borg--ui-0F766E)
 ![Docker Compose](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)
@@ -146,6 +147,7 @@ Synology share and run `borg list` / `borg extract` against `borg-repo-<host>`. 
 
 ## Files
 
+- `VERSION` and `CHANGELOG.md`: the current version of these scripts (2.0.0) and what changed in each version.
 - `docker_compose.yml`: Runs `ainullcode/borg-ui` (plus a `redis` archive-cache sidecar) with required mounts, FUSE capabilities, and hardening (resource limits, healthchecks, log rotation).
 - `BORG_UI-smiddleware-prep-appdata.sh`: Borg UI script-entity wrapper that triggers remote pre-backup app snapshot prep.
 - `BORG_UI-borgui-config-export-snapshot.sh`: Borg UI script-entity wrapper that creates Borg UI local config export snapshots.

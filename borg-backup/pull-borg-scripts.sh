@@ -13,6 +13,7 @@
 #     --name     host whose scripts to pull (default: this host's short name)
 #     --branch   GitHub branch (default: main)
 #     --dest     local folder (default: /home/thomas/borg-backup-scripts)
+#     --version  show the version
 #
 # Local files are owned by the owner of the --dest folder (not root): scripts 750, README 640.
 # Copies go to /mnt/backups/borg-script-backups/<host>/github-pulls/<YYYYmmdd-HHMMSS>/ with a
@@ -24,8 +25,11 @@
 
 set -Eeuo pipefail
 
+# Keep in step with borg-backup/VERSION and CHANGELOG.md.
+PULL_VERSION="2.0.0"
+
 REPO="BladerunnerxRC/Docker"
-NAME="$(hostname -s)"
+NAME=""
 BRANCH="main"
 DEST="/home/thomas/borg-backup-scripts"
 BACKUP_MOUNT="/mnt/backups"
@@ -36,12 +40,15 @@ while [ $# -gt 0 ]; do
     --name)    NAME="${2:?--name needs a value}"; shift 2 ;;
     --branch)  BRANCH="${2:?--branch needs a value}"; shift 2 ;;
     --dest)    DEST="${2:?--dest needs a value}"; shift 2 ;;
+    --version) echo "pull-borg-scripts.sh ${PULL_VERSION}"; exit 0 ;;
     -h|--help) awk 'NR>2 {if (!/^#/) exit; sub(/^# ?/,""); print}' "$0"; exit 0 ;;
     *)         echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+[ -n "$NAME" ] || NAME="$(hostname -s)"
 
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo $0 ...) - writing to $BACKUP_MOUNT needs it"
 [[ "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "'$NAME' is not a valid short hostname"
@@ -106,8 +113,9 @@ done
 # NFS shares often squash root or use ACLs, so chmod may be refused: keep it best-effort.
 chmod 700 "$copy_dir" 2>/dev/null || true
 for f in "${FILES[@]}"; do cp "$STAGE/$f" "$copy_dir/$f"; done
-printf 'repo:    %s\nbranch:  %s\ncommit:  %s\npulled:  %s\nby:      %s on %s\n' \
-  "$REPO" "$BRANCH" "$COMMIT" "$(date -Is)" "${SUDO_USER:-root}" "$(hostname -s)" > "$copy_dir/SOURCE.txt"
+printf 'repo:    %s\nbranch:  %s\ncommit:  %s\npulled:  %s\nby:      %s on %s\ntool:    pull-borg-scripts.sh %s\n' \
+  "$REPO" "$BRANCH" "$COMMIT" "$(date -Is)" "${SUDO_USER:-root}" "$(hostname -s)" "$PULL_VERSION" \
+  > "$copy_dir/SOURCE.txt"
 echo "Saved a copy to $copy_dir/"
 
 # Folders are named YYYYmmdd-HHMMSS, so a reverse name sort is newest first.
