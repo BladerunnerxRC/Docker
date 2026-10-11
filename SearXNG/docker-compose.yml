@@ -123,4 +123,4 @@ networks:
     # passlist entry would have to blanket-trust the whole range.
     ipam:
       config:
-        - subnet: 172.28.0.0/24
+        - subnet: 172.30.0.0/24
