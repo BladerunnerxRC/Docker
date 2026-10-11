@@ -23,13 +23,13 @@ flowchart TB
     subgraph CLIENTS["💻 CLIENTS"]
         direction LR
         BROWSER["🌐 browser on the LAN<br/>192.168.200.0/24"]
-        APICLI["🤖 API consumer<br/>MCP server · LLM integration<br/>reaches it from 172.28.0.0/24"]
+        APICLI["🤖 API consumer<br/>MCP server · LLM integration<br/>reaches it from 172.30.0.0/24"]
     end
 
     %% ---------------- THE STACK ----------------
     subgraph HOST["🖥️ DOCKER HOST · 192.168.200.14"]
         direction TB
-        subgraph NET["🔗 searxng_net · bridge · 172.28.0.0/24"]
+        subgraph NET["🔗 searxng_net · bridge · 172.30.0.0/24"]
             direction TB
             SX["🔎 searxng<br/>container 8080<br/>published 192.168.200.14:8888"]
             VK["🗝️ valkey · 6379<br/>never published<br/>limiter counters + link tokens<br/>maxmemory 192mb · no snapshots"]
@@ -72,6 +72,21 @@ in, which is why it is a deploy step rather than a bind mount. The subnet on
 > `SEARXNG_SECRET` is required — the stack won't deploy without it. Don't skip step 4's
 > limiter config copy either; the container starts fine without it, but bot protection
 > stays on defaults until you do.
+
+## Subnet migration for existing deployments
+
+The stack uses `172.30.0.0/24` to avoid the `mariadb-kodi-bak_default`
+network's `172.28.0.0/16` on optiplex-two. Confirm the new range does not
+overlap other Docker networks or LAN/VPN routes before deploying elsewhere.
+After pulling and redeploying in Portainer, copy the updated `limiter.toml`
+into the persistent config volume and restart SearXNG:
+
+```sh
+docker cp limiter.toml searxng:/etc/searxng/limiter.toml
+docker restart searxng
+```
+
+A Git pull alone does not update the copy inside `searxng_config`.
 
 ## Storage
 
@@ -182,7 +197,7 @@ What it's tuned for:
 
 - **Trusted LAN** — `pass_ip = ['192.168.200.0/24']` gives LAN clients unrestricted
   access, including the JSON API.
-- **Trusted containers** — `pass_ip` also lists `172.28.0.0/24`, the pinned
+- **Trusted containers** — `pass_ip` also lists `172.30.0.0/24`, the pinned
   `searxng_net` subnet. This entry is **required for any containerised API consumer**
   (LLM/search integrations, MCP servers). The limiter matches `request.remote_addr`,
   and a container's peer address is always a Docker-internal address — never
