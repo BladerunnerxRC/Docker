@@ -10,7 +10,7 @@ services:
       CMK_PASSWORD: ${CMK_PASSWORD}        # set in Portainer stack env, not in Git
       TZ: America/New_York
     ports:
-      - "8080:5000"                        # Web UI; Traefik on smiddleware proxies checkmk.shome here
+      - "8081:5000"                        # Web UI; Traefik on smiddleware proxies checkmk.shome here (not 8080: kubectl's localhost default)
       - "8000:8000"                        # Agent Receiver (TLS registration); agents connect directly
     volumes:
       - checkmk-sites:/omd/sites           # all site data; include in Borg backups

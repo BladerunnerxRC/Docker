@@ -71,7 +71,7 @@ services:
       CMK_PASSWORD: ${CMK_PASSWORD}        # set in Portainer stack env, not in Git
       TZ: America/New_York
     ports:
-      - "8080:5000"                        # Web UI (consider 8081 — see note)
+      - "8081:5000"                        # Web UI
       - "8000:8000"                        # Agent Receiver (TLS registration); agents connect directly
     volumes:
       - checkmk-sites:/omd/sites           # all site data; include in Borg backups
@@ -88,15 +88,15 @@ services:
 volumes:
   checkmk-sites:
 ```
-Note: `kubectl` on optiplex-two defaults to `localhost:8080`; publishing Checkmk on 8080 makes stray kubectl runs there hit Checkmk. Changing to `8081:5000` avoids confusion. **Undecided.**
+Note: `kubectl` on optiplex-two defaults to `localhost:8080`; publishing Checkmk on 8080 makes stray kubectl runs there hit Checkmk. **Decided 2026-10-12: 8081** (LAN probe showed 8000/8080/8081 free).
 
 ## Next steps
 1. Confirm eviction-hard status (above).
 2. Pre-flight on optiplex-two: `sudo ss -tlnp | grep -E ':(8080|8081|8000)\b'`; optionally `sudo vgs ubuntu-vg` and extend LV (`sudo lvextend -r -L +60G /dev/ubuntu-vg/ubuntu-lv`).
 3. Deploy stack via Portainer to optiplex-two; set `CMK_PASSWORD`.
 4. Verify: `docker logs checkmk 2>&1 | grep -iE 'created new site|version'` (expect ≥ 2.5.0p9); `docker stats --no-stream checkmk`.
-5. First login: `http://192.168.200.14:8080/cmk/` as `cmkadmin`.
-6. Write Traefik dynamic route on smiddleware: `checkmk.shome` → `http://192.168.200.14:8080`, preserve `/cmk/`, redirect `/` → `/cmk/`, Step-CA leaf cert.
+5. First login: `http://192.168.200.14:8081/cmk/` as `cmkadmin`.
+6. Write Traefik dynamic route on smiddleware: `checkmk.shome` → `http://192.168.200.14:8081`, preserve `/cmk/`, redirect `/` → `/cmk/`, Step-CA leaf cert.
 7. Agent rollout script for all four hosts + register with `cmk-agent-ctl register` (port 8000, TLS).
 8. Firewall: TCP 6556 (server→agents), TCP 8000 (agents→server), UDP 161 (SNMP). IoT `10.` network is HA-only — needs a narrow SRM rule or monitor via HA.
 9. Kubernetes monitoring via Checkmk Kubernetes special agent + cluster collector.
