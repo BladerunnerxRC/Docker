@@ -1,1 +1,1 @@
-- Checkmk deployment state and next steps: see docker/checkmk/HANDOFF-POC.md
+- Checkmk deployment state and next steps: see checkmk/HANDOFF-POC.md

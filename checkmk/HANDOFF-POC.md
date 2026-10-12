@@ -58,7 +58,7 @@ kubectl get node optiplex-two -o jsonpath='{.status.capacity.memory}{"\n"}{.stat
 ```
 
 ## Stack to deploy (not yet deployed)
-Path suggestion: `docker/checkmk/compose.yaml` in `BladerunnerxRC/Docker`.
+Path: `checkmk/docker_compose.yml` in `BladerunnerxRC/Docker`.
 ```yaml
 services:
   checkmk:

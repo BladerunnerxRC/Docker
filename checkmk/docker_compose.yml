@@ -1,4 +1,4 @@
-# docker/checkmk/compose.yaml — Portainer GitOps stack, target: optiplex-two
+# checkmk/docker_compose.yml — Portainer GitOps stack, target: optiplex-two
 services:
   checkmk:
     # Pin to a specific patch (e.g. 2.5.0pNN) after first pull for reproducible GitOps
