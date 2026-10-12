@@ -9,3 +9,6 @@ secrets/
 
 # Claude Code per-machine approvals (absolute local paths) - never commit
 **/.claude/settings.local.json
+
+# Local-only notes with host-specific details (IPs, hardware) - never commit
+**/*.local.md
