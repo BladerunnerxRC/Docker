@@ -371,7 +371,10 @@ answering N at the deploy script's own y/N prompt (exit 3) counts as a cancel, n
 `--name` and `--address` must be plain hostnames or IP addresses, because they are written into the
 generated scripts; anything else is refused before the survey starts.
 
-Output (in `./borg-survey-<name>-<timestamp>/`):
+Output (in `./borg-survey-<name>-<timestamp>/`). The folder is private (`700`) because `raw/` can
+hold container environment variables; when run with `sudo` it belongs to the user who ran `sudo`.
+Delete old survey folders when you're done with them: anything in your home folder is copied
+into the snapshot.
 
 - `REPORT.md` — what was found, what Borg should back up, consistency caveats, suggested excludes
 - `raw/` — raw inventory data backing the report

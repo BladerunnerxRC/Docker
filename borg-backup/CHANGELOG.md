@@ -59,5 +59,13 @@ The first versioned release. Everything before it was unversioned and counts as 
 - Two deploys in the same second no longer overwrite each other's backup.
 - A directory size printed on two lines no longer breaks the generated prep script.
 - The survey checklist said `chmod 700`; it is 750, matching the deploy script.
+- Survey output was world-readable, including `raw/docker-inspect-all.json`, which can hold
+  container environment variables. It is now written private (`umask 077`), and under `sudo`
+  the output folder is handed to the user who ran `sudo`, so the report reads without `sudo`.
+  A `--from` folder from an older survey is closed up the same way.
+- The report's "What Borg should back up" list repeated compose projects and app dirs that
+  live inside a home directory; it now lists the home directory and names those as covered.
+- The report described home copies as "excluding `.cache/`"; it now says `~/.cache` and
+  anything mounted inside the home are left out.
 
 [2.0.0]: https://github.com/BladerunnerxRC/Docker/tree/borg-dev/borg-backup

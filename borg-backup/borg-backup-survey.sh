@@ -119,6 +119,23 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "         directory sizes) may be incomplete. Recommended: sudo $0" >&2
 fi
 
+# The output can hold secrets (docker inspect includes container environment variables), so
+# everything is written private. Under sudo, the output dir is handed to the user who ran sudo
+# when the survey exits, so they can read it without sudo. Only a dir this survey creates (or a
+# --from survey dir) is handed back, never an existing dir passed with --output.
+umask 077
+HAND_BACK=0
+[ -e "$OUT_DIR" ] || HAND_BACK=1
+hand_back_output() {
+  [ "$HAND_BACK" -eq 1 ] && [ -d "$OUT_DIR" ] || return 0
+  # umask only covers new files; this also closes up a --from dir written by an older survey.
+  chmod -R go-rwx "$OUT_DIR" 2>/dev/null || true
+  if [ "$(id -u)" -eq 0 ] && [[ "${SUDO_UID:-}" =~ ^[1-9][0-9]*$ ]]; then
+    chown -R "${SUDO_UID}:${SUDO_GID:-$SUDO_UID}" "$OUT_DIR" 2>/dev/null || true
+  fi
+}
+trap hand_back_output EXIT
+
 have() { command -v "$1" >/dev/null 2>&1; }
 slugify() { echo "$1" | sed 's|^/||; s|/|-|g; s|[^A-Za-z0-9._-]|_|g'; }
 
@@ -172,6 +189,15 @@ measure_homes() {
 
 # Home dirs the generated prep script copies whole (set by generate_prep_script).
 declare -a COPIED_HOMES=()
+
+# True if path $1 is one of the home dirs or inside one (for the report's recommendations).
+in_any_home() {
+  local h
+  for h in "${HOME_DIRS[@]}"; do
+    case "$1" in "$h"|"$h"/*) return 0 ;; esac
+  done
+  return 1
+}
 
 # Prints the copied home dir that contains path $1; fails if none does.
 home_containing() {
@@ -562,7 +588,7 @@ write_report() {
         if is_large "$hsize"; then
           echo "- \`${hd}\` ($(large_note "$hsize")) - generated commented out; consider having Borg read it directly"
         else
-          echo "- \`${hd}\` (${hsize}) - copied into the snapshot, excluding \`.cache/\`"
+          echo "- \`${hd}\` (${hsize}) - copied into the snapshot, except \`~/.cache\` and anything mounted inside it"
         fi
       done
     else
@@ -616,11 +642,29 @@ write_report() {
     echo "1. \`/var/backups/borg-apps/latest\` - the app-consistent snapshot staged by the"
     echo "   generated prep script (dumps, configs, metadata). **Run the prep script before every backup.**"
     echo "2. \`/etc\` - system configuration."
+    # Compose projects and app dirs inside a home dir are covered by that home's entry.
+    local p d hd n=3
+    local -a covered=()
     if [ "$DOCKER_PRESENT" -eq 1 ]; then
-      echo "3. \`/var/lib/docker/volumes\` - named Docker volumes (DB volumes are made consistent by the dumps in item 1)."
-      local p d n=4
-      for p in "${!COMPOSE_PROJECTS[@]}"; do echo "${n}. \`${COMPOSE_PROJECTS[$p]}\` - compose project '${p}'"; n=$((n+1)); done
-      for d in "${APP_DIRS[@]}"; do echo "${n}. \`${d}\`"; n=$((n+1)); done
+      echo "${n}. \`/var/lib/docker/volumes\` - named Docker volumes (DB volumes are made consistent by the dumps in item 1)."
+      n=$((n+1))
+    fi
+    for hd in "${HOME_DIRS[@]}"; do echo "${n}. \`${hd}\` - home directory"; n=$((n+1)); done
+    if [ "$DOCKER_PRESENT" -eq 1 ]; then
+      for p in "${!COMPOSE_PROJECTS[@]}"; do
+        if in_any_home "${COMPOSE_PROJECTS[$p]}"; then
+          covered+=("\`${COMPOSE_PROJECTS[$p]}\` (compose project '${p}')")
+        else
+          echo "${n}. \`${COMPOSE_PROJECTS[$p]}\` - compose project '${p}'"; n=$((n+1))
+        fi
+      done
+      for d in "${APP_DIRS[@]}"; do
+        if in_any_home "$d"; then covered+=("\`${d}\`"); else echo "${n}. \`${d}\`"; n=$((n+1)); fi
+      done
+    fi
+    if [ "${#covered[@]}" -gt 0 ]; then
+      echo
+      echo "Already covered by a home directory above: $(printf '%s, ' "${covered[@]}" | sed 's/, $//')."
     fi
     echo
     echo "Suggested excludes: \`/var/lib/docker/overlay2\`, \`/var/lib/docker/tmp\`, container image"
@@ -1606,6 +1650,7 @@ if [ -n "$FROM_DIR" ]; then
     exit 1
   fi
   OUT_DIR="$FROM_DIR"
+  HAND_BACK=1   # a survey output dir (it has survey-state.sh), possibly root-owned from an older run
   RAW="${OUT_DIR}/raw"
   REPORT="${OUT_DIR}/REPORT.md"
   # shellcheck disable=SC1090
