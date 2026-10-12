@@ -124,6 +124,11 @@ fi
 # when the survey exits, so they can read it without sudo. An existing --output dir must be an
 # earlier survey's folder or empty: it is closed up before anything is written into it, because
 # umask doesn't change files that already exist. Any other existing dir is refused.
+# Missing parents of --output are created first, with normal permissions, so the user can still
+# reach the output folder that is handed back to them.
+if [ -z "$FROM_DIR" ] && [ ! -d "$(dirname "$OUT_DIR")" ]; then
+  mkdir -p "$(dirname "$OUT_DIR")"
+fi
 umask 077
 HAND_BACK=0
 if [ ! -e "$OUT_DIR" ]; then
@@ -132,7 +137,10 @@ elif [ -n "$FROM_DIR" ]; then
   :   # --from replaces OUT_DIR below
 elif [ -d "$OUT_DIR" ] && { [ -f "$OUT_DIR/raw/survey-state.sh" ] || [ -z "$(ls -A "$OUT_DIR" 2>/dev/null)" ]; }; then
   HAND_BACK=1
-  chmod -R go-rwx "$OUT_DIR"
+  chmod -R go-rwx "$OUT_DIR" 2>/dev/null || {
+    echo "ERROR: cannot make ${OUT_DIR} private (it was probably written by root) - re-run with sudo." >&2
+    exit 1
+  }
 else
   echo "ERROR: --output ${OUT_DIR} already exists and is not an earlier survey's folder - choose a new folder." >&2
   exit 1
@@ -179,6 +187,10 @@ K8S_KIND=""                      # k3s | microk8s | kubeadm | ""
 declare -a K8S_PATHS=()
 declare -a OTHER_PLATFORMS=()    # freeform notes: LXD, libvirt, ZFS, ...
 declare -A NAMED_VOLUMES=()      # Docker named volume in use -> containers using it ("a, b")
+DOCKER_VOLUMES_DIR="/var/lib/docker/volumes"   # <docker data-root>/volumes, from docker info
+# Created by the operator once the host's Borg plan reads DOCKER_VOLUMES_DIR. Outside the prep
+# script on purpose, so deploying or regenerating the script never resets it.
+DOCKER_VOLUMES_ACK="/etc/borg-backup/docker-volumes-in-plan"
 declare -a HOME_DIRS=()          # home dirs of login users (UID 1000+ under /home)
 declare -A HOME_SIZE=()          # home dir -> du -sh size, measured once (not saved in state)
 declare -A DIR_SEEN=()           # dedup for APP_DIRS
@@ -206,8 +218,9 @@ declare -a COPIED_HOMES=()
 warn_named_volumes() {
   [ "${#NAMED_VOLUMES[@]}" -gt 0 ] || return 0
   echo "WARNING: ${#NAMED_VOLUMES[@]} Docker named volume(s) in use: ${!NAMED_VOLUMES[*]}"
-  echo "         They are NOT in the prep snapshot. Add /var/lib/docker/volumes to this host's"
-  echo "         Borg plan, then set BORG_PLAN_HAS_DOCKER_VOLUMES=1 in the installed prep script."
+  echo "         They are NOT in the prep snapshot. Add ${DOCKER_VOLUMES_DIR} to this host's"
+  echo "         Borg plan, then turn the warning off: sudo mkdir -p /etc/borg-backup &&"
+  echo "         sudo touch ${DOCKER_VOLUMES_ACK}"
   echo
 }
 
@@ -220,11 +233,21 @@ in_any_home() {
   return 1
 }
 
-# Prints the copied home dir that contains path $1; fails if none does.
+# Prints the copied home dir that contains path $1; fails if none does. The home copy uses
+# rsync --one-file-system, so a path on another file system (a separate disk or NFS mount inside
+# the home) is not covered by it. When that can't be checked (the path is missing here, as with
+# --from on another machine), it counts as not covered: a second copy beats a missing one.
 home_containing() {
-  local h
+  local h hdev pdev
   for h in "${COPIED_HOMES[@]}"; do
-    case "$1" in "$h"|"$h"/*) echo "$h"; return 0 ;; esac
+    case "$1" in
+      "$h"|"$h"/*)
+        hdev="$(stat -c %d "$h" 2>/dev/null)" || return 1
+        pdev="$(stat -c %d "$1" 2>/dev/null)" || return 1
+        [ "$hdev" = "$pdev" ] || return 1
+        echo "$h"; return 0
+        ;;
+    esac
   done
   return 1
 }
@@ -332,11 +355,16 @@ collect_docker() {
 
   # Bind mounts -> candidate app data dirs
   docker ps -a --format '{{.Names}}' | while read -r c; do
-    docker inspect -f '{{$n:=.Name}}{{range .Mounts}}{{$n}}|{{.Type}}|{{.Source}}|{{.Destination}}{{println}}{{end}}' "$c" 2>/dev/null
+    docker inspect -f '{{$n:=.Name}}{{range .Mounts}}{{$n}}|{{.Type}}|{{.Source}}|{{.Destination}}|{{.Name}}{{println}}{{end}}' "$c" 2>/dev/null
   done | sed 's/^\///' | grep . > "$RAW/docker-mounts.psv" || true
 
+  # Named volumes live under <data-root>/volumes, which isn't always /var/lib/docker.
+  local droot
+  droot="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
+  [ -n "$droot" ] && DOCKER_VOLUMES_DIR="${droot%/}/volumes"
+
   local vname mcont mtype src
-  while IFS='|' read -r mcont mtype src _dst; do
+  while IFS='|' read -r mcont mtype src _dst vname; do
     case "$mtype" in
       bind)
         if [ -d "$src" ]; then
@@ -344,8 +372,7 @@ collect_docker() {
         fi
         ;;
       volume)
-        # Named volumes live at /var/lib/docker/volumes/<name>/_data; the prep script doesn't copy them.
-        vname="$(basename "$(dirname "$src")")"
+        # Docker gives the volume's name directly; the prep script doesn't copy named volumes.
         [ -n "$vname" ] || continue
         NAMED_VOLUMES["$vname"]="${NAMED_VOLUMES[$vname]:+${NAMED_VOLUMES[$vname]}, }${mcont}"
         ;;
@@ -523,17 +550,23 @@ write_report() {
       if [ "${#NAMED_VOLUMES[@]}" -gt 0 ]; then
         echo "### ⚠️ Named volumes - NOT in the prep snapshot"
         echo
-        echo "**Add \`/var/lib/docker/volumes\` to this host's Borg plan, or these volumes are not backed up.**"
+        echo "**Add \`${DOCKER_VOLUMES_DIR}\` to this host's Borg plan, or these volumes are not backed up.**"
         echo "The prep script copies bind-mounted folders into the snapshot, but not named volumes."
-        echo "Database dumps still cover databases stored in them. Once the plan includes the path, set"
-        echo "\`BORG_PLAN_HAS_DOCKER_VOLUMES=1\` in the installed prep script; until then it reports a"
-        echo "warning on every run. The survey keeps that setting when it regenerates the script."
+        echo "Database dumps still cover databases stored in them. The prep script reports a warning"
+        echo "on every run until the plan includes the path and you turn the warning off with"
+        echo "\`sudo mkdir -p /etc/borg-backup && sudo touch ${DOCKER_VOLUMES_ACK}\`."
         echo
         echo "| Volume | Used by | Size |"
         echo "| --- | --- | --- |"
-        local v
+        # One du for all volumes, bounded as a whole, instead of up to 20 s per volume.
+        local v vs vp
+        local -a vpaths=()
+        local -A vsize=()
+        for v in "${!NAMED_VOLUMES[@]}"; do vpaths+=("${DOCKER_VOLUMES_DIR}/${v}/_data"); done
+        while IFS=$'\t' read -r vs vp; do vsize[$vp]="$vs"; done \
+          < <(timeout 60 du -sh "${vpaths[@]}" 2>/dev/null || true)
         for v in "${!NAMED_VOLUMES[@]}"; do
-          echo "| \`${v}\` | ${NAMED_VOLUMES[$v]} | $(dir_size "/var/lib/docker/volumes/${v}/_data") |"
+          echo "| \`${v}\` | ${NAMED_VOLUMES[$v]} | ${vsize[${DOCKER_VOLUMES_DIR}/${v}/_data]:-?} |"
         done
         echo
       fi
@@ -555,7 +588,7 @@ write_report() {
         echo "is no compose file to back up. The \`docker-inspect-all.json\` captured by the prep"
         echo "script is the record of how to recreate them (image, env, mounts, ports, restart"
         echo "policy). Their bind mounts are listed below; named volumes are covered by"
-        echo "\`/var/lib/docker/volumes\`."
+        echo "\`${DOCKER_VOLUMES_DIR}\`."
         echo
         echo "| Container | Image | Status | Ports |"
         echo "| --- | --- | --- | --- |"
@@ -694,7 +727,7 @@ write_report() {
     local p d hd n=3
     local -a covered=()
     if [ "$DOCKER_PRESENT" -eq 1 ]; then
-      echo "${n}. \`/var/lib/docker/volumes\` - named Docker volumes (DB volumes are made consistent by the dumps in item 1)."
+      echo "${n}. \`${DOCKER_VOLUMES_DIR}\` - named Docker volumes (DB volumes are made consistent by the dumps in item 1)."
       n=$((n+1))
     fi
     for hd in "${HOME_DIRS[@]}"; do echo "${n}. \`${hd}\` - home directory"; n=$((n+1)); done
@@ -738,11 +771,6 @@ generate_prep_script() {
   local h h2 d p wdir slug inhome
   local -A app_size=() home_note=()   # home_note: why a home gets no copy of its own
 
-  # Keep the operator's "Borg plan covers named volumes" setting from the installed script.
-  local plan_vols=0
-  grep -qx 'BORG_PLAN_HAS_DOCKER_VOLUMES=1' "/usr/local/sbin/borg-prep-appdata-${NAME}.sh" 2>/dev/null \
-    && plan_vols=1
-
   # Decide what is copied whole, so nothing lands in the snapshot twice:
   #  - a home inside a copied app dir (a container bind-mounting /home) is copied with it;
   #  - a home inside another copied home is copied with that one;
@@ -762,7 +790,15 @@ generate_prep_script() {
     [ -z "${home_note[$h]:-}" ] || continue
     for h2 in "${HOME_DIRS[@]}"; do
       [ "$h2" != "$h" ] && [ -z "${home_note[$h2]:-}" ] && ! is_large "${HOME_SIZE[$h2]}" || continue
-      case "$h" in "$h2"/*) home_note[$h]="inside home ${h2}, copied with it"; break ;; esac
+      # Same file system only: the outer home's copy stops at mount points (--one-file-system).
+      case "$h" in
+        "$h2"/*)
+          if [ "$(stat -c %d "$h" 2>/dev/null)" = "$(stat -c %d "$h2" 2>/dev/null)" ] \
+             && [ -n "$(stat -c %d "$h" 2>/dev/null)" ]; then
+            home_note[$h]="inside home ${h2}, copied with it"; break
+          fi
+          ;;
+      esac
     done
     [ -n "${home_note[$h]:-}" ] || COPIED_HOMES+=("$h")
   done
@@ -796,10 +832,12 @@ HOST_NAME="${NAME}"
 BASE="/var/backups/borg-apps"
 LATEST="\${BASE}/latest"
 
-# Docker named volumes are NOT copied into this snapshot; Borg has to read /var/lib/docker/volumes.
-# 0: each run warns while named volumes are in use. Set to 1 once this host's Borg plan includes
-# /var/lib/docker/volumes. borg-backup-survey.sh keeps this setting when it regenerates the script.
-BORG_PLAN_HAS_DOCKER_VOLUMES=${plan_vols}
+# Docker named volumes are NOT copied into this snapshot; Borg has to read Docker's volumes folder
+# (<data-root>/volumes, normally /var/lib/docker/volumes). While named volumes are in use, each
+# run warns until this file exists. Create it once the host's Borg plan includes that folder:
+#   sudo mkdir -p /etc/borg-backup && sudo touch ${DOCKER_VOLUMES_ACK}
+# It lives outside this script, so deploying or regenerating the script never resets it.
+DOCKER_VOLUMES_ACK="${DOCKER_VOLUMES_ACK}"
 
 mkdir -p "\$BASE"
 TMP="\$(mktemp -d "\${BASE}/.tmp.XXXXXX")"
@@ -919,9 +957,13 @@ if command -v docker >/dev/null 2>&1; then
 
   docker inspect $(docker ps -aq) > "$TMP/docker/docker-inspect-all.json" 2>/dev/null || true
 
-  # Docker volume metadata only - the actual /var/lib/docker/volumes path is backed up by Borg directly.
-  if [ -d /var/lib/docker/volumes ]; then
-    find /var/lib/docker/volumes -maxdepth 3 -mindepth 1 -print > "$TMP/docker/docker-volume-tree.txt" 2>/dev/null || true
+  # Named volumes live under Docker's data-root, which isn't always /var/lib/docker.
+  vroot="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
+  vroot="${vroot:-/var/lib/docker}"; vroot="${vroot%/}/volumes"
+
+  # Docker volume metadata only - the volume data itself is backed up by Borg directly.
+  if [ -d "$vroot" ]; then
+    find "$vroot" -maxdepth 3 -mindepth 1 -print > "$TMP/docker/docker-volume-tree.txt" 2>/dev/null || true
   fi
 
   # Checked on every run, so an app added since the survey is caught too.
@@ -929,10 +971,10 @@ if command -v docker >/dev/null 2>&1; then
     | xargs -r docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{println}}{{end}}{{end}}' 2>/dev/null \
     | grep . | sort -u | paste -sd' ' || true)"
   if [ -n "$vols" ]; then
-    if [ "$BORG_PLAN_HAS_DOCKER_VOLUMES" = "1" ]; then
-      log "Named volumes, backed up by Borg from /var/lib/docker/volumes: ${vols}"
+    if [ -e "$DOCKER_VOLUMES_ACK" ]; then
+      log "Named volumes, backed up by Borg from ${vroot}: ${vols}"
     else
-      warn "named volumes not in this snapshot: ${vols} - add /var/lib/docker/volumes to the Borg plan, then set BORG_PLAN_HAS_DOCKER_VOLUMES=1 in $0"
+      warn "named volumes not in this snapshot: ${vols} - add ${vroot} to the Borg plan, then: sudo mkdir -p ${DOCKER_VOLUMES_ACK%/*} && sudo touch ${DOCKER_VOLUMES_ACK}"
     fi
   fi
 else
@@ -1681,7 +1723,7 @@ save_state() {
     echo "# Collected: $(date -Is)"
     declare -p DOCKER_PRESENT COMPOSE_PROJECTS APP_DIRS DB_CONTAINERS SQLITE_FILES \
       NATIVE_SERVICES STANDALONE_CONTAINERS TAILSCALE_PRESENT TAILSCALE_STATE \
-      K8S_KIND K8S_PATHS OTHER_PLATFORMS HOME_DIRS NAMED_VOLUMES
+      K8S_KIND K8S_PATHS OTHER_PLATFORMS HOME_DIRS NAMED_VOLUMES DOCKER_VOLUMES_DIR
   } > "$RAW/survey-state.sh"
 }
 

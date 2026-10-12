@@ -45,11 +45,11 @@ The first versioned release. Everything before it was unversioned and counts as 
   `REPORT.md` and copied into the snapshot, without `~/.cache` and without mounts inside them.
   Nothing is copied twice when homes, app dirs and compose projects overlap.
 - Named volume warning. Docker named volumes are not copied into the snapshot, so Borg has to
-  read `/var/lib/docker/volumes`. The survey lists named volumes in use (with containers and
-  sizes) in a warning section of `REPORT.md` and in its terminal output. Every prep script run
-  checks again, so an app added since the survey is caught too, and reports a `WARN` until
-  `BORG_PLAN_HAS_DOCKER_VOLUMES=1` is set in the installed script. The survey keeps that
-  setting when it regenerates the script. The checked-in optiplex-three script has the check;
+  read Docker's volumes folder (`<data-root>/volumes`, from `docker info`). The survey lists
+  named volumes in use (with containers and sizes) in a warning section of `REPORT.md` and in
+  its terminal output. Every prep script run checks again, so an app added since the survey is
+  caught too, and reports a `WARN` until `/etc/borg-backup/docker-volumes-in-plan` exists. That
+  file lives outside the script, so deploys and regenerated scripts keep it. The checked-in optiplex-three script has the check;
   the optiplex-two and smiddleware scripts predate 2.0.0 and need regenerating on their hosts.
 - optiplex-three's checked-in prep script is regenerated from its 2026-10-11 survey and matches
   the deployed one. It now covers portracker (`/volume1/docker/portracker` and a consistent

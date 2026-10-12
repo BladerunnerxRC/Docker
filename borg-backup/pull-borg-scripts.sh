@@ -92,7 +92,10 @@ PULLED=()
 for f in "${FILES[@]}" "${OPTIONAL_FILES[@]}"; do
   # Check the HTTP status rather than curl -f: only a 404 means "not on this branch"; a network
   # error or a GitHub 5xx (status 000 or 5xx) must stop the pull, even for an optional file.
-  code="$(curl -sSL -o "$STAGE/$f" -w '%{http_code}' "$BASE_URL/$f" 2>/dev/null)" || true
+  # curl's own exit status is checked too: a transfer cut off partway can still report 200.
+  rc=0
+  code="$(curl -sSL -o "$STAGE/$f" -w '%{http_code}' "$BASE_URL/$f" 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || die "download of $f failed (curl exit $rc, HTTP ${code:-none}) - network or GitHub problem? Nothing was changed."
   case "$code" in
     200) ;;
     404)
@@ -126,17 +129,11 @@ mountpoint -q "$BACKUP_MOUNT" \
 parent="$(dirname "$DEST")"
 [ -d "$DEST" ] || [ -d "$parent" ] || die "$parent does not exist - pass --dest DIR. Nothing was changed."
 
-# A new local folder belongs to the owner of its parent (normally thomas), not to root.
-if [ ! -d "$DEST" ]; then
-  install -d -m 750 -o "$(stat -c %u "$parent")" -g "$(stat -c %g "$parent")" "$DEST" \
-    || die "cannot create $DEST. Nothing was changed."
-fi
-uid="$(stat -c %u "$DEST")" gid="$(stat -c %g "$DEST")"
-
 # -----------------------------
-# Dated copy on the Synology share
+# Folders: the dated share folder first, then the local folder. If the local folder can't be
+# created, the empty share folder is removed again, so a failure leaves nothing behind.
 # -----------------------------
-mkdir -p "$PULL_DIR" || die "cannot create $PULL_DIR - check the share's permissions."
+mkdir -p "$PULL_DIR" || die "cannot create $PULL_DIR - check the share's permissions. Nothing was changed."
 
 # mkdir without -p is atomic: if another pull already took this second, wait for the next one.
 tries=0
@@ -147,6 +144,17 @@ until mkdir "$copy_dir" 2>/dev/null; do
   sleep 1
   copy_dir="$PULL_DIR/$(date +%Y%m%d-%H%M%S)"
 done
+
+# A new local folder belongs to the owner of its parent (normally thomas), not to root.
+if [ ! -d "$DEST" ]; then
+  install -d -m 750 -o "$(stat -c %u "$parent")" -g "$(stat -c %g "$parent")" "$DEST" \
+    || { rmdir "$copy_dir" 2>/dev/null; die "cannot create $DEST. Nothing was changed."; }
+fi
+uid="$(stat -c %u "$DEST")" gid="$(stat -c %g "$DEST")"
+
+# -----------------------------
+# Dated copy on the Synology share
+# -----------------------------
 # NFS shares often squash root or use ACLs, so chmod may be refused: keep it best-effort.
 chmod 700 "$copy_dir" 2>/dev/null || true
 for f in "${PULLED[@]}"; do cp "$STAGE/$f" "$copy_dir/$f"; done
