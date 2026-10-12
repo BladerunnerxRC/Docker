@@ -1,1 +1,1 @@
-- Checkmk deployment state and next steps: see checkmk/HANDOFF-POC.md
+- Checkmk deployment state and next steps: see checkmk/HANDOFF-POC.md- Host IPs/hardware for Checkmk: checkmk/HANDOFF-POC.local.md (gitignored, local only)
