@@ -8,7 +8,9 @@ services:
     environment:
       CMK_SITE_ID: cmk                     # URL becomes /cmk/
       CMK_PASSWORD: ${CMK_PASSWORD}        # set in Portainer stack env, not in Git
-      TZ: America/New_York
+      # Eastern time. Must not contain "_": the 2.5.0 entrypoint runs sed "s_^TZ=.*_TZ=\"$TZ\"_"
+      # on every restart, so America/New_York crash-loops the container.
+      TZ: America/Detroit
     ports:
       - "8081:5000"                        # Web UI; Traefik on smiddleware proxies checkmk.shome here (not 8080: kubectl's localhost default)
       - "8000:8000"                        # Agent Receiver (TLS registration); agents connect directly
