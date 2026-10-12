@@ -167,6 +167,7 @@ TAILSCALE_STATE=""
 K8S_KIND=""                      # k3s | microk8s | kubeadm | ""
 declare -a K8S_PATHS=()
 declare -a OTHER_PLATFORMS=()    # freeform notes: LXD, libvirt, ZFS, ...
+declare -A NAMED_VOLUMES=()      # Docker named volume in use -> containers using it ("a, b")
 declare -a HOME_DIRS=()          # home dirs of login users (UID 1000+ under /home)
 declare -A HOME_SIZE=()          # home dir -> du -sh size, measured once (not saved in state)
 declare -A DIR_SEEN=()           # dedup for APP_DIRS
@@ -189,6 +190,15 @@ measure_homes() {
 
 # Home dirs the generated prep script copies whole (set by generate_prep_script).
 declare -a COPIED_HOMES=()
+
+# Named volumes are not copied into the prep snapshot, so the Borg plan has to read them itself.
+warn_named_volumes() {
+  [ "${#NAMED_VOLUMES[@]}" -gt 0 ] || return 0
+  echo "WARNING: ${#NAMED_VOLUMES[@]} Docker named volume(s) in use: ${!NAMED_VOLUMES[*]}"
+  echo "         They are NOT in the prep snapshot. Add /var/lib/docker/volumes to this host's"
+  echo "         Borg plan, then set BORG_PLAN_HAS_DOCKER_VOLUMES=1 in the installed prep script."
+  echo
+}
 
 # True if path $1 is one of the home dirs or inside one (for the report's recommendations).
 in_any_home() {
@@ -314,11 +324,21 @@ collect_docker() {
     docker inspect -f '{{$n:=.Name}}{{range .Mounts}}{{$n}}|{{.Type}}|{{.Source}}|{{.Destination}}{{println}}{{end}}' "$c" 2>/dev/null
   done | sed 's/^\///' | grep . > "$RAW/docker-mounts.psv" || true
 
-  while IFS='|' read -r _c mtype src _dst; do
-    [ "$mtype" = "bind" ] || continue
-    if [ -d "$src" ]; then
-      add_app_dir "$src"
-    fi
+  local vname mcont mtype src
+  while IFS='|' read -r mcont mtype src _dst; do
+    case "$mtype" in
+      bind)
+        if [ -d "$src" ]; then
+          add_app_dir "$src"
+        fi
+        ;;
+      volume)
+        # Named volumes live at /var/lib/docker/volumes/<name>/_data; the prep script doesn't copy them.
+        vname="$(basename "$(dirname "$src")")"
+        [ -n "$vname" ] || continue
+        NAMED_VOLUMES["$vname"]="${NAMED_VOLUMES[$vname]:+${NAMED_VOLUMES[$vname]}, }${mcont}"
+        ;;
+    esac
   done < "$RAW/docker-mounts.psv"
 
   # Database containers (by image name)
@@ -487,8 +507,25 @@ write_report() {
     echo
     if [ "$DOCKER_PRESENT" -eq 1 ]; then
       echo "- Containers: $(docker ps -q | wc -l) running / $(docker ps -aq | wc -l) total"
-      echo "- Named volumes: $(docker volume ls -q | wc -l) (backed up by including \`/var/lib/docker/volumes\` in Borg paths)"
+      echo "- Named volumes: ${#NAMED_VOLUMES[@]} in use by containers, $(docker volume ls -q | wc -l) in total"
       echo
+      if [ "${#NAMED_VOLUMES[@]}" -gt 0 ]; then
+        echo "### ⚠️ Named volumes - NOT in the prep snapshot"
+        echo
+        echo "**Add \`/var/lib/docker/volumes\` to this host's Borg plan, or these volumes are not backed up.**"
+        echo "The prep script copies bind-mounted folders into the snapshot, but not named volumes."
+        echo "Database dumps still cover databases stored in them. Once the plan includes the path, set"
+        echo "\`BORG_PLAN_HAS_DOCKER_VOLUMES=1\` in the installed prep script; until then it reports a"
+        echo "warning on every run. The survey keeps that setting when it regenerates the script."
+        echo
+        echo "| Volume | Used by | Size |"
+        echo "| --- | --- | --- |"
+        local v
+        for v in "${!NAMED_VOLUMES[@]}"; do
+          echo "| \`${v}\` | ${NAMED_VOLUMES[$v]} | $(dir_size "/var/lib/docker/volumes/${v}/_data") |"
+        done
+        echo
+      fi
       if [ "${#COMPOSE_PROJECTS[@]}" -gt 0 ]; then
         echo "### Compose projects"
         echo
@@ -690,6 +727,11 @@ generate_prep_script() {
   local h h2 d p wdir slug inhome
   local -A app_size=() home_note=()   # home_note: why a home gets no copy of its own
 
+  # Keep the operator's "Borg plan covers named volumes" setting from the installed script.
+  local plan_vols=0
+  grep -qx 'BORG_PLAN_HAS_DOCKER_VOLUMES=1' "/usr/local/sbin/borg-prep-appdata-${NAME}.sh" 2>/dev/null \
+    && plan_vols=1
+
   # Decide what is copied whole, so nothing lands in the snapshot twice:
   #  - a home inside a copied app dir (a container bind-mounting /home) is copied with it;
   #  - a home inside another copied home is copied with that one;
@@ -742,6 +784,11 @@ umask 077
 HOST_NAME="${NAME}"
 BASE="/var/backups/borg-apps"
 LATEST="\${BASE}/latest"
+
+# Docker named volumes are NOT copied into this snapshot; Borg has to read /var/lib/docker/volumes.
+# 0: each run warns while named volumes are in use. Set to 1 once this host's Borg plan includes
+# /var/lib/docker/volumes. borg-backup-survey.sh keeps this setting when it regenerates the script.
+BORG_PLAN_HAS_DOCKER_VOLUMES=${plan_vols}
 
 mkdir -p "\$BASE"
 TMP="\$(mktemp -d "\${BASE}/.tmp.XXXXXX")"
@@ -864,6 +911,18 @@ if command -v docker >/dev/null 2>&1; then
   # Docker volume metadata only - the actual /var/lib/docker/volumes path is backed up by Borg directly.
   if [ -d /var/lib/docker/volumes ]; then
     find /var/lib/docker/volumes -maxdepth 3 -mindepth 1 -print > "$TMP/docker/docker-volume-tree.txt" 2>/dev/null || true
+  fi
+
+  # Checked on every run, so an app added since the survey is caught too.
+  vols="$(docker ps -aq 2>/dev/null \
+    | xargs -r docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{println}}{{end}}{{end}}' 2>/dev/null \
+    | grep . | sort -u | paste -sd' ' || true)"
+  if [ -n "$vols" ]; then
+    if [ "$BORG_PLAN_HAS_DOCKER_VOLUMES" = "1" ]; then
+      log "Named volumes, backed up by Borg from /var/lib/docker/volumes: ${vols}"
+    else
+      warn "named volumes not in this snapshot: ${vols} - add /var/lib/docker/volumes to the Borg plan, then set BORG_PLAN_HAS_DOCKER_VOLUMES=1 in $0"
+    fi
   fi
 else
   section_skip "docker not installed"
@@ -1611,7 +1670,7 @@ save_state() {
     echo "# Collected: $(date -Is)"
     declare -p DOCKER_PRESENT COMPOSE_PROJECTS APP_DIRS DB_CONTAINERS SQLITE_FILES \
       NATIVE_SERVICES STANDALONE_CONTAINERS TAILSCALE_PRESENT TAILSCALE_STATE \
-      K8S_KIND K8S_PATHS OTHER_PLATFORMS HOME_DIRS
+      K8S_KIND K8S_PATHS OTHER_PLATFORMS HOME_DIRS NAMED_VOLUMES
   } > "$RAW/survey-state.sh"
 }
 
@@ -1678,6 +1737,7 @@ else
   echo "  Report: ${REPORT}"
   echo "  Raw data: ${RAW}/"
   echo
+  warn_named_volumes
 fi
 
 DO_GENERATE=0
@@ -1713,6 +1773,8 @@ if [ "$DO_GENERATE" -eq 1 ]; then
   echo "  - Confirm database dump credentials (MySQL/MariaDB may need /root/.my.cnf on the host)."
   echo "  - Add /var/backups/borg-apps/latest (plus paths listed in REPORT.md) to the Borg job's source paths."
   echo "  - Test: sudo ${OUT_DIR}/borg-prep-appdata-${NAME}.sh && ls -la /var/backups/borg-apps/latest"
+  echo
+  warn_named_volumes
 
   offer_deploy
 fi

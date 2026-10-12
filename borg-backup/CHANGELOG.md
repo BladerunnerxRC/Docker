@@ -42,6 +42,12 @@ The first versioned release. Everything before it was unversioned and counts as 
 - Survey: home directories of login users (UID 1000+ under `/home`) are listed in
   `REPORT.md` and copied into the snapshot, without `~/.cache` and without mounts inside them.
   Nothing is copied twice when homes, app dirs and compose projects overlap.
+- Named volume warning. Docker named volumes are not copied into the snapshot, so Borg has to
+  read `/var/lib/docker/volumes`. The survey lists named volumes in use (with containers and
+  sizes) in a warning section of `REPORT.md` and in its terminal output. Every prep script run
+  checks again, so an app added since the survey is caught too, and reports a `WARN` until
+  `BORG_PLAN_HAS_DOCKER_VOLUMES=1` is set in the installed script. The survey keeps that
+  setting when it regenerates the script.
 - `--version` on the survey and pull scripts.
 - README: architecture, backup, deploy and restore diagrams.
 

@@ -385,6 +385,21 @@ into the snapshot.
 > [!IMPORTANT]
 > The generated scripts are starting points reflecting what was detected at survey time — review rsync sources, database credentials, and any commented-out large directories before deploying to `/usr/local/sbin/`.
 
+> [!WARNING]
+> **Docker named volumes are not copied into the snapshot.** Bind-mounted folders are; named
+> volumes (`volumes:` entries without a host path) are not, so the host's Borg plan must include
+> `/var/lib/docker/volumes`. Database dumps still cover databases stored in a named volume.
+> The survey lists named volumes in `REPORT.md`, and every prep script run reports a `WARN` while
+> any are in use, including volumes added after the survey. Once the Borg plan includes the path,
+> turn the warning off on that host:
+>
+> ```bash
+> sudo sed -i 's/^BORG_PLAN_HAS_DOCKER_VOLUMES=0$/BORG_PLAN_HAS_DOCKER_VOLUMES=1/' \
+>   /usr/local/sbin/borg-prep-appdata-$(hostname -s).sh
+> ```
+>
+> The survey keeps that setting when it regenerates the prep script.
+
 ### `pull-borg-scripts.sh`
 
 Gets the current scripts onto a host from GitHub, so they arrive with Linux line endings (copies
