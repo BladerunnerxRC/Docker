@@ -7,14 +7,19 @@
 #
 # Files pulled (from borg-backup/ in BladerunnerxRC/Docker):
 #   borg-prep-appdata-<host>.sh  deploy-borg-prep-<host>.sh  borg-backup-survey.sh  README.md
+#   pull-borg-scripts.sh (this script, so it updates itself)
+#   VERSION  CHANGELOG.md (skipped on branches that don't have them yet)
 #
 # Usage (on the host, as root so it can write to /mnt/backups):
 #   sudo ./pull-borg-scripts.sh [--name HOST] [--branch BRANCH] [--dest DIR]
 #     --name     host whose scripts to pull (default: this host's short name)
 #     --branch   GitHub branch (default: main)
-#     --dest     local folder (default: /home/thomas/borg-backup-scripts)
+#     --dest     local folder (default: /home/thomas/borg-backup-scripts for main,
+#                /home/thomas/borg-backup-scripts-<branch> for any other branch, so testing
+#                a branch never overwrites the files you use)
+#     --version  show the version
 #
-# Local files are owned by the owner of the --dest folder (not root): scripts 750, README 640.
+# Local files are owned by the owner of the --dest folder (not root): scripts 750, others 640.
 # Copies go to /mnt/backups/borg-script-backups/<host>/github-pulls/<YYYYmmdd-HHMMSS>/ with a
 # SOURCE.txt naming the commit; the newest 10 are kept. They sit one level below the deploy
 # script's own backups, so its --rollback never picks them up.
@@ -24,10 +29,14 @@
 
 set -Eeuo pipefail
 
+# Keep in step with borg-backup/VERSION and CHANGELOG.md.
+PULL_VERSION="2.0.0"
+
 REPO="BladerunnerxRC/Docker"
-NAME="$(hostname -s)"
+NAME=""
 BRANCH="main"
-DEST="/home/thomas/borg-backup-scripts"
+DEST=""
+DEST_BASE="/home/thomas/borg-backup-scripts"
 BACKUP_MOUNT="/mnt/backups"
 KEEP_PULLS=10
 
@@ -36,6 +45,7 @@ while [ $# -gt 0 ]; do
     --name)    NAME="${2:?--name needs a value}"; shift 2 ;;
     --branch)  BRANCH="${2:?--branch needs a value}"; shift 2 ;;
     --dest)    DEST="${2:?--dest needs a value}"; shift 2 ;;
+    --version) echo "pull-borg-scripts.sh ${PULL_VERSION}"; exit 0 ;;
     -h|--help) awk 'NR>2 {if (!/^#/) exit; sub(/^# ?/,""); print}' "$0"; exit 0 ;;
     *)         echo "Unknown option: $1" >&2; exit 1 ;;
   esac
@@ -43,12 +53,20 @@ done
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+[ -n "$NAME" ] || NAME="$(hostname -s)"
+
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo $0 ...) - writing to $BACKUP_MOUNT needs it"
 [[ "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "'$NAME' is not a valid short hostname"
 [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || die "'$BRANCH' is not a valid branch name"
 command -v curl >/dev/null || die "curl is not installed (sudo apt install curl)"
 
-FILES=("borg-prep-appdata-${NAME}.sh" "deploy-borg-prep-${NAME}.sh" "borg-backup-survey.sh" "README.md")
+if [ -z "$DEST" ]; then
+  if [ "$BRANCH" = "main" ]; then DEST="$DEST_BASE"; else DEST="${DEST_BASE}-${BRANCH//\//-}"; fi
+fi
+
+FILES=("borg-prep-appdata-${NAME}.sh" "deploy-borg-prep-${NAME}.sh" "borg-backup-survey.sh" "README.md"
+       "pull-borg-scripts.sh")
+OPTIONAL_FILES=("VERSION" "CHANGELOG.md")   # added in 2.0.0; older branches don't have them
 PULL_DIR="${BACKUP_MOUNT}/borg-script-backups/${NAME}/github-pulls"
 
 STAGE="$(mktemp -d)"
@@ -69,11 +87,26 @@ else
 fi
 BASE_URL="https://raw.githubusercontent.com/${REPO}/${REF}/borg-backup"
 
-echo "Pulling ${#FILES[@]} files from ${REPO}, branch ${BRANCH} (commit ${COMMIT:0:7})"
-for f in "${FILES[@]}"; do
-  # No --retry: some curl versions exit 0 after a 404 when it is set, despite -f.
-  curl -fsSL -o "$STAGE/$f" "$BASE_URL/$f" \
-    || die "download failed: $BASE_URL/$f - wrong branch, or not in the repo yet? Nothing was changed."
+echo "Pulling from ${REPO}, branch ${BRANCH} (commit ${COMMIT:0:7})"
+PULLED=()
+for f in "${FILES[@]}" "${OPTIONAL_FILES[@]}"; do
+  # Check the HTTP status rather than curl -f: only a 404 means "not on this branch"; a network
+  # error or a GitHub 5xx (status 000 or 5xx) must stop the pull, even for an optional file.
+  # curl's own exit status is checked too: a transfer cut off partway can still report 200.
+  rc=0
+  code="$(curl -sSL -o "$STAGE/$f" -w '%{http_code}' "$BASE_URL/$f" 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || die "download of $f failed (curl exit $rc, HTTP ${code:-none}) - network or GitHub problem? Nothing was changed."
+  case "$code" in
+    200) ;;
+    404)
+      case " ${OPTIONAL_FILES[*]} " in
+        *" $f "*) echo "  $f is not on this branch - skipped"; rm -f "$STAGE/$f"; continue ;;
+      esac
+      die "$f is not on branch $BRANCH ($BASE_URL/$f). Nothing was changed."
+      ;;
+    *) die "download of $f failed (HTTP ${code:-none}) - network or GitHub problem? Nothing was changed." ;;
+  esac
+  PULLED+=("$f")
   [ -s "$STAGE/$f" ] || die "$f downloaded empty. Nothing was changed."
   if [ "$(tr -cd '\r' < "$STAGE/$f" | wc -c)" -gt 0 ]; then
     die "$f has Windows (CRLF) line endings. Nothing was changed."
@@ -87,11 +120,19 @@ for f in "${FILES[@]}"; do
 done
 
 # -----------------------------
-# Dated copy on the Synology share
+# Checks that change nothing come first: the share must be mounted and the local folder's
+# parent must exist, so a failure leaves neither a share folder nor a local folder behind.
 # -----------------------------
 ls "$BACKUP_MOUNT/" >/dev/null 2>&1 || true   # wakes an x-systemd.automount
 mountpoint -q "$BACKUP_MOUNT" \
   || die "$BACKUP_MOUNT is not mounted - mount the Synology backup share first. Nothing was changed."
+parent="$(dirname "$DEST")"
+[ -d "$DEST" ] || [ -d "$parent" ] || die "$parent does not exist - pass --dest DIR. Nothing was changed."
+
+# -----------------------------
+# Folders: the dated share folder first, then the local folder. If the local folder can't be
+# created, the empty share folder is removed again, so a failure leaves nothing behind.
+# -----------------------------
 mkdir -p "$PULL_DIR" || die "cannot create $PULL_DIR - check the share's permissions. Nothing was changed."
 
 # mkdir without -p is atomic: if another pull already took this second, wait for the next one.
@@ -103,11 +144,23 @@ until mkdir "$copy_dir" 2>/dev/null; do
   sleep 1
   copy_dir="$PULL_DIR/$(date +%Y%m%d-%H%M%S)"
 done
+
+# A new local folder belongs to the owner of its parent (normally thomas), not to root.
+if [ ! -d "$DEST" ]; then
+  install -d -m 750 -o "$(stat -c %u "$parent")" -g "$(stat -c %g "$parent")" "$DEST" \
+    || { rmdir "$copy_dir" 2>/dev/null; die "cannot create $DEST. Nothing was changed."; }
+fi
+uid="$(stat -c %u "$DEST")" gid="$(stat -c %g "$DEST")"
+
+# -----------------------------
+# Dated copy on the Synology share
+# -----------------------------
 # NFS shares often squash root or use ACLs, so chmod may be refused: keep it best-effort.
 chmod 700 "$copy_dir" 2>/dev/null || true
-for f in "${FILES[@]}"; do cp "$STAGE/$f" "$copy_dir/$f"; done
-printf 'repo:    %s\nbranch:  %s\ncommit:  %s\npulled:  %s\nby:      %s on %s\n' \
-  "$REPO" "$BRANCH" "$COMMIT" "$(date -Is)" "${SUDO_USER:-root}" "$(hostname -s)" > "$copy_dir/SOURCE.txt"
+for f in "${PULLED[@]}"; do cp "$STAGE/$f" "$copy_dir/$f"; done
+printf 'repo:    %s\nbranch:  %s\ncommit:  %s\npulled:  %s\nby:      %s on %s\ntool:    pull-borg-scripts.sh %s\n' \
+  "$REPO" "$BRANCH" "$COMMIT" "$(date -Is)" "${SUDO_USER:-root}" "$(hostname -s)" "$PULL_VERSION" \
+  > "$copy_dir/SOURCE.txt"
 echo "Saved a copy to $copy_dir/"
 
 # Folders are named YYYYmmdd-HHMMSS, so a reverse name sort is newest first.
@@ -117,15 +170,8 @@ ls -1d "$PULL_DIR"/[0-9]*-[0-9]*/ 2>/dev/null | sort -r | tail -n +$((KEEP_PULLS
 # -----------------------------
 # Update the local scripts folder
 # -----------------------------
-# A new folder belongs to the owner of its parent (normally thomas), not to root.
-if [ ! -d "$DEST" ]; then
-  parent="$(dirname "$DEST")"
-  install -d -m 750 -o "$(stat -c %u "$parent")" -g "$(stat -c %g "$parent")" "$DEST"
-fi
-uid="$(stat -c %u "$DEST")" gid="$(stat -c %g "$DEST")"
-
 echo "Updating $DEST:"
-for f in "${FILES[@]}"; do
+for f in "${PULLED[@]}"; do
   if [ ! -f "$DEST/$f" ]; then status="new"
   elif cmp -s "$STAGE/$f" "$DEST/$f"; then status="unchanged"
   else status="updated"
@@ -138,5 +184,8 @@ for f in "${FILES[@]}"; do
 done
 
 echo
+if [ -f "$STAGE/VERSION" ]; then
+  echo "Version on ${BRANCH}: $(head -n1 "$STAGE/VERSION") (changes: $DEST/CHANGELOG.md)"
+fi
 echo "Nothing is installed yet. To deploy the prep script (shows a diff and asks first):"
 echo "  cd $DEST && sudo ./deploy-borg-prep-${NAME}.sh --test"

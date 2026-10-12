@@ -1,0 +1,41 @@
+name: borg-backup checks
+
+on:
+  push:
+    paths:
+      - 'borg-backup/**'
+      - '.github/workflows/borg-backup.yml'
+  pull_request:
+    paths:
+      - 'borg-backup/**'
+      - '.github/workflows/borg-backup.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Scripts parse (bash -n)
+        run: |
+          rc=0
+          for f in borg-backup/*.sh; do
+            bash -n "$f" || { echo "::error file=$f::bash -n failed"; rc=1; }
+          done
+          exit $rc
+
+      - name: Version numbers agree
+        run: |
+          v="$(head -n1 borg-backup/VERSION)"
+          echo "VERSION: $v"
+          rc=0
+          grep -qx "SURVEY_VERSION=\"$v\"" borg-backup/borg-backup-survey.sh \
+            || { echo "::error file=borg-backup/borg-backup-survey.sh::SURVEY_VERSION is not $v"; rc=1; }
+          grep -qx "PULL_VERSION=\"$v\"" borg-backup/pull-borg-scripts.sh \
+            || { echo "::error file=borg-backup/pull-borg-scripts.sh::PULL_VERSION is not $v"; rc=1; }
+          grep -q "^## \[$v\]" borg-backup/CHANGELOG.md \
+            || { echo "::error file=borg-backup/CHANGELOG.md::no '## [$v]' entry"; rc=1; }
+          exit $rc
