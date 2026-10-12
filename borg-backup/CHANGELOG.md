@@ -34,6 +34,8 @@ The first versioned release. Everything before it was unversioned and counts as 
   README, itself, `VERSION` and `CHANGELOG.md` from GitHub, checks them, and saves a dated copy
   with the commit in `/mnt/backups/borg-script-backups/<host>/github-pulls/`. Files from `main`
   go to `~/borg-backup-scripts`, files from another branch to `~/borg-backup-scripts-<branch>`.
+  Only an HTTP 404 counts as a file missing from the branch; a network or GitHub error stops
+  the pull with nothing changed.
 - Prep script summary: timestamped progress, warnings on stderr, and a per-section table
   (files, size, time, warnings) printed at the end and saved as `metadata/prep-summary.txt`.
   In the optiplex-three script and in every generated script.
@@ -47,7 +49,11 @@ The first versioned release. Everything before it was unversioned and counts as 
   sizes) in a warning section of `REPORT.md` and in its terminal output. Every prep script run
   checks again, so an app added since the survey is caught too, and reports a `WARN` until
   `BORG_PLAN_HAS_DOCKER_VOLUMES=1` is set in the installed script. The survey keeps that
-  setting when it regenerates the script.
+  setting when it regenerates the script. The checked-in optiplex-three script has the check;
+  the optiplex-two and smiddleware scripts predate 2.0.0 and need regenerating on their hosts.
+- optiplex-three's checked-in prep script is regenerated from its 2026-10-11 survey and matches
+  the deployed one. It now covers portracker (`/volume1/docker/portracker` and a consistent
+  copy of `portracker.db`), which the earlier checked-in version did not.
 - `--version` on the survey and pull scripts.
 - README: architecture, backup, deploy and restore diagrams.
 
@@ -68,7 +74,9 @@ The first versioned release. Everything before it was unversioned and counts as 
 - Survey output was world-readable, including `raw/docker-inspect-all.json`, which can hold
   container environment variables. It is now written private (`umask 077`), and under `sudo`
   the output folder is handed to the user who ran `sudo`, so the report reads without `sudo`.
-  A `--from` folder from an older survey is closed up the same way.
+  An existing folder given with `--output` must be an earlier survey's folder or empty, and is
+  closed up before anything is written into it; any other existing folder is refused. A
+  `--from` folder from an older survey is closed up the same way.
 - The report's "What Borg should back up" list repeated compose projects and app dirs that
   live inside a home directory; it now lists the home directory and names those as covered.
 - The report described home copies as "excluding `.cache/`"; it now says `~/.cache` and

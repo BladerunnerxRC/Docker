@@ -121,11 +121,22 @@ fi
 
 # The output can hold secrets (docker inspect includes container environment variables), so
 # everything is written private. Under sudo, the output dir is handed to the user who ran sudo
-# when the survey exits, so they can read it without sudo. Only a dir this survey creates (or a
-# --from survey dir) is handed back, never an existing dir passed with --output.
+# when the survey exits, so they can read it without sudo. An existing --output dir must be an
+# earlier survey's folder or empty: it is closed up before anything is written into it, because
+# umask doesn't change files that already exist. Any other existing dir is refused.
 umask 077
 HAND_BACK=0
-[ -e "$OUT_DIR" ] || HAND_BACK=1
+if [ ! -e "$OUT_DIR" ]; then
+  HAND_BACK=1
+elif [ -n "$FROM_DIR" ]; then
+  :   # --from replaces OUT_DIR below
+elif [ -d "$OUT_DIR" ] && { [ -f "$OUT_DIR/raw/survey-state.sh" ] || [ -z "$(ls -A "$OUT_DIR" 2>/dev/null)" ]; }; then
+  HAND_BACK=1
+  chmod -R go-rwx "$OUT_DIR"
+else
+  echo "ERROR: --output ${OUT_DIR} already exists and is not an earlier survey's folder - choose a new folder." >&2
+  exit 1
+fi
 hand_back_output() {
   [ "$HAND_BACK" -eq 1 ] && [ -d "$OUT_DIR" ] || return 0
   # umask only covers new files; this also closes up a --from dir written by an older survey.
@@ -1710,6 +1721,7 @@ if [ -n "$FROM_DIR" ]; then
   fi
   OUT_DIR="$FROM_DIR"
   HAND_BACK=1   # a survey output dir (it has survey-state.sh), possibly root-owned from an older run
+  chmod -R go-rwx "$OUT_DIR" 2>/dev/null || true   # older surveys wrote it world-readable
   RAW="${OUT_DIR}/raw"
   REPORT="${OUT_DIR}/REPORT.md"
   # shellcheck disable=SC1090

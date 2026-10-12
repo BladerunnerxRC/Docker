@@ -90,13 +90,19 @@ BASE_URL="https://raw.githubusercontent.com/${REPO}/${REF}/borg-backup"
 echo "Pulling from ${REPO}, branch ${BRANCH} (commit ${COMMIT:0:7})"
 PULLED=()
 for f in "${FILES[@]}" "${OPTIONAL_FILES[@]}"; do
-  # No --retry: some curl versions exit 0 after a 404 when it is set, despite -f.
-  if ! curl -fsSL -o "$STAGE/$f" "$BASE_URL/$f" 2>/dev/null; then
-    case " ${OPTIONAL_FILES[*]} " in
-      *" $f "*) echo "  $f is not on this branch - skipped"; rm -f "$STAGE/$f"; continue ;;
-    esac
-    die "download failed: $BASE_URL/$f - wrong branch, or not in the repo yet? Nothing was changed."
-  fi
+  # Check the HTTP status rather than curl -f: only a 404 means "not on this branch"; a network
+  # error or a GitHub 5xx (status 000 or 5xx) must stop the pull, even for an optional file.
+  code="$(curl -sSL -o "$STAGE/$f" -w '%{http_code}' "$BASE_URL/$f" 2>/dev/null)" || true
+  case "$code" in
+    200) ;;
+    404)
+      case " ${OPTIONAL_FILES[*]} " in
+        *" $f "*) echo "  $f is not on this branch - skipped"; rm -f "$STAGE/$f"; continue ;;
+      esac
+      die "$f is not on branch $BRANCH ($BASE_URL/$f). Nothing was changed."
+      ;;
+    *) die "download of $f failed (HTTP ${code:-none}) - network or GitHub problem? Nothing was changed." ;;
+  esac
   PULLED+=("$f")
   [ -s "$STAGE/$f" ] || die "$f downloaded empty. Nothing was changed."
   if [ "$(tr -cd '\r' < "$STAGE/$f" | wc -c)" -gt 0 ]; then
@@ -111,12 +117,17 @@ for f in "${FILES[@]}" "${OPTIONAL_FILES[@]}"; do
 done
 
 # -----------------------------
-# Local folder: created before the share copy, so a failure here leaves nothing behind.
-# A new folder belongs to the owner of its parent (normally thomas), not to root.
+# Checks that change nothing come first: the share must be mounted and the local folder's
+# parent must exist, so a failure leaves neither a share folder nor a local folder behind.
 # -----------------------------
+ls "$BACKUP_MOUNT/" >/dev/null 2>&1 || true   # wakes an x-systemd.automount
+mountpoint -q "$BACKUP_MOUNT" \
+  || die "$BACKUP_MOUNT is not mounted - mount the Synology backup share first. Nothing was changed."
+parent="$(dirname "$DEST")"
+[ -d "$DEST" ] || [ -d "$parent" ] || die "$parent does not exist - pass --dest DIR. Nothing was changed."
+
+# A new local folder belongs to the owner of its parent (normally thomas), not to root.
 if [ ! -d "$DEST" ]; then
-  parent="$(dirname "$DEST")"
-  [ -d "$parent" ] || die "$parent does not exist - pass --dest DIR. Nothing was changed."
   install -d -m 750 -o "$(stat -c %u "$parent")" -g "$(stat -c %g "$parent")" "$DEST" \
     || die "cannot create $DEST. Nothing was changed."
 fi
@@ -125,10 +136,7 @@ uid="$(stat -c %u "$DEST")" gid="$(stat -c %g "$DEST")"
 # -----------------------------
 # Dated copy on the Synology share
 # -----------------------------
-ls "$BACKUP_MOUNT/" >/dev/null 2>&1 || true   # wakes an x-systemd.automount
-mountpoint -q "$BACKUP_MOUNT" \
-  || die "$BACKUP_MOUNT is not mounted - mount the Synology backup share first. Nothing was changed."
-mkdir -p "$PULL_DIR" || die "cannot create $PULL_DIR - check the share's permissions. Nothing was changed."
+mkdir -p "$PULL_DIR" || die "cannot create $PULL_DIR - check the share's permissions."
 
 # mkdir without -p is atomic: if another pull already took this second, wait for the next one.
 tries=0
