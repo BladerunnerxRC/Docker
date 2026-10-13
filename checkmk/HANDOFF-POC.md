@@ -31,7 +31,7 @@ See `HANDOFF-POC.local.md` for IPs, OS, CPU/RAM/disk per host.
 - Internal domain pattern: `https://appname.shome`. Internal PKI: Step-CA.
 - Portainer (Business Edition 2.45) GitOps from public repo `BladerunnerxRC/Docker`, ref `refs/heads/main`, Compose path `checkmk/docker_compose.yml`, stack name `checkmk`. Public repo — no Git authentication. Secrets go in Portainer stack env vars only.
 - Backups: Borg UI (on optiplex-docker) to Synology NAS.
-- LibreNMS (K3s) is being **retired; Checkmk replaces it** — see "LibreNMS retirement" below.
+- LibreNMS (K3s) was **removed 2026-10-13; Checkmk replaces it** — see "LibreNMS — removed" below.
 
 ## Decisions made
 - **Server host:** optiplex-two, Docker (not K3s, not native .deb).
@@ -103,6 +103,7 @@ See `HANDOFF-POC.local.md` for IPs, OS, CPU/RAM/disk per host.
 12. **Ubuntu `cloud-init` + `cloud-init-base` logrotate overlap:** both packages ship the same rotation for `/var/log/cloud-init.log`, so `logrotate.service` fails nightly ("duplicate log entry") and Checkmk's Systemd Service Summary goes CRIT. Fix: `sudo mv /etc/logrotate.d/cloud-init /root/logrotate.d-cloud-init.old && sudo systemctl start logrotate`.
 
 ## Open items
+- **LibreNMS leftovers outside K3s:** remove the Dashy tile and any AdGuard rewrite.
 - **Activate pending changes** in Checkmk if the Changes badge is non-zero (folder agent-setting fix).
 - **Discovery cleanup (from 2026-10-13):**
   - optiplex-docker: run service discovery, remove the 3 vanished `NFS mount` services, activate.
@@ -119,7 +120,7 @@ See `HANDOFF-POC.local.md` for IPs, OS, CPU/RAM/disk per host.
 - **optiplex-docker:** confirm `smart_posix` moved to `plugins/300/` and `docker.cfg` = `combined`; run discovery.
 - **Statping decommission:** repo side in PR #24. Host side: on optiplex-two, `docker volume ls -f dangling=true` (2 orphaned volumes expected), archive if wanted, delete the Portainer stack if listed, remove volumes and `/data/compose/14`.
 - **Backups:**
-  - PR #22 (draft): `omd backup cmk -` block in the optiplex-two Borg prep script. Test first on optiplex-two: `docker exec checkmk omd backup cmk - > /tmp/cmk-test.tgz`, then `file`/`tar -tzf`/`ls -lh`.
+  - PR #22 (draft): `omd backup cmk -` block in the optiplex-two Borg prep script. **Tested OK 2026-10-13:** manual `docker exec checkmk omd backup cmk - | sudo tee /var/backups/checkmk/cmk-<date>.omd.tar.gz` → 15 MB gzip (~545 MB raw), 3,257 entries, includes `etc/check_mk/conf.d/wato/`. Online — no downtime. Ready to mark ready-for-review and merge. Manual copy `cmk-2026-10-13-1453.omd.tar.gz` (sha256 `85aa243d…a55509`): on optiplex-two in `/var/backups/checkmk/`, and on the NAS at optiplex-docker `/mnt/backups/checkmk-manual/` (checksums match; optiplex-two has no NAS mount, so it went via `scp`). Restore is `omd restore` inside the container (site must be stopped).
   - PR #24: statping removal + KodiDB Borg UI wrapper host fix. Also check the **live** Borg UI `kodidb-prep-dbdump` SSH target and that `/var/backups/borg-kodidb/latest` is fresh.
   - #22 and #24 touch the same lines — whichever merges second needs a rebase.
   - After merging, install the prep script on optiplex-two by hand (no deploy script for that host).
@@ -129,31 +130,31 @@ See `HANDOFF-POC.local.md` for IPs, OS, CPU/RAM/disk per host.
 ## Stack
 Source of truth: [`docker_compose.yml`](docker_compose.yml) in this folder.
 
-## LibreNMS retirement (decided 2026-10-12)
-Helm release `librenms` (chart 7.2.0, app 26.1.1), namespace `default`, on K3s. Workloads: deploy `librenms-frontend`, `librenms-rrdcached`; sts `librenms-mysql`, `librenms-poller` (2), `librenms-redis-master`; MetalLB LoadBalancer for the UI. Saved on optiplex-docker in `~/librenms-retire/`: `librenms-values.yaml` (may contain secrets — never commit) and `devices-and-alerts.txt` (device list).
+## LibreNMS — removed 2026-10-13
+Removed from K3s early (plan was a 2-week hold; skipped since LibreNMS had 22 alert rules but **no alert transports** — it notified no one). **Step A was not done first: the network devices below are currently unmonitored** — see Next steps.
 
-LibreNMS had 22 enabled alert rules but **no alert transports** — it was likely not notifying anyone, so no alerting is lost.
+**Final backup** on the NAS, via optiplex-docker's `/mnt/backups/librenms-final/` (share `SYSBAK_borgrepos_opti-docker`):
+- `librenms-db-2026-10-13.sql.gz` — full `mysqldump` (Bitnami MySQL, root password read from `$MYSQL_ROOT_PASSWORD_FILE` inside the pod), verified `-- Dump completed`.
+- `librenms-retire/` — `librenms-values.yaml` (may contain secrets — never commit) and `devices-and-alerts.txt` (device list for Step A). Original still in `~/librenms-retire/` on optiplex-docker.
+- `opt-k3-librenms-tooling.tgz` — the old install scripts/manifests/values from `/opt/k3/librenms`.
+- RRD graph history was not kept.
 
-**Step A — add to Checkmk first** (device IPs in the local file):
+**What was removed:** `helm uninstall librenms` (chart 7.2.0, app 26.1.1, ns `default`); local-path PVCs (MySQL, Redis, rrdcached + journal) and their data; manual Retain PVs `librenms-app-pv`/`librenms-db-pv` and PVCs (never mounted by any pod); `/opt/k3/librenms` (hostPath dirs were empty; not present on the other nodes). **Not part of the Helm release** and deleted by hand: `svc/librenms-frontend` (LoadBalancer — frees its MetalLB IP) and `secret/librenms-env`. No cron/timer referenced the old scripts.
+
+**Still to do outside K3s:** remove the LibreNMS tile from Dashy and any AdGuard rewrite for it.
+
+**Step A — add the former LibreNMS devices to Checkmk** (device IPs in the local file):
 
 | Folder | Settings | Hosts |
 |---|---|---|
-| `Network devices` | IPv4 only; agent **No API integrations, no Checkmk agent**; **SNMP v2 or v3**; one SNMP credentials rule on the folder (same community LibreNMS uses) | router (Synology RT6600ax/SRM), smithvault (DS920+), smithmountain (DS220+), smithvids (DS216j), t2600g-18ts (TP-Link JetStream switch), dell-h625cdw (printer); also move `homeassistant` here for SNMP |
+| `Network devices` | IPv4 only; agent **No API integrations, no Checkmk agent**; **SNMP v2 or v3**; one SNMP credentials rule on the folder (same community LibreNMS used — in the archived `librenms-values.yaml` or the device configs) | router (Synology RT6600ax/SRM), smithvault (DS920+), smithmountain (DS220+), smithvids (DS216j), t2600g-18ts (TP-Link JetStream switch), dell-h625cdw (printer); also move `homeassistant` here for SNMP |
 | `Ping only` | agent **No API integrations, no Checkmk agent**; **No SNMP** | um-switch-loft, ISP upstream gateway, one unidentified device (see local file) |
 
-Then bulk discovery → activate. The admin workstation (Windows) was also in LibreNMS — optional.
-
-**Step B — stop, keep data (reversible):**
-```bash
-kubectl scale -n default deploy/librenms-frontend sts/librenms-poller --replicas=0
-kubectl scale -n default deploy/librenms-rrdcached sts/librenms-redis-master sts/librenms-mysql --replicas=0
-# undo: mysql/redis/rrdcached → 1, then frontend → 1, poller → 2
-```
-**Step C — after ~2 weeks:** final DB dump to NAS → `helm uninstall librenms -n default` → delete leftover PVCs (statefulset volumes, plus `librenms-app-pvc`/`librenms-db-pvc` on **manual** PVs that need their own cleanup) → remove Dashy tile, any AdGuard rewrite, free the MetalLB IP → update this doc.
+Then bulk discovery → activate. The admin workstation (Windows) was also in LibreNMS — optional. Adding smithvault also gives one volume1 capacity service (see Completed 2026-10-13 item 4).
 
 ## Next steps
 0. **Discovery cleanup** (open items) — quick, and it clears the remaining WARN/UNKN noise before adding more hosts.
-1. **LibreNMS retirement, Step A** (above) — was planned for 2026-10-13; not started.
+1. **LibreNMS Step A — priority:** LibreNMS is gone, so the router, NAS units, switch and printer have no monitoring until they're added to Checkmk (see "LibreNMS — removed").
 2. Home Assistant SNMP + HTTP (open items above).
 3. Traefik dynamic route on smiddleware: `checkmk.shome` → optiplex-two:8081, preserve `/cmk/`, redirect `/` → `/cmk/`, Step-CA leaf cert.
 4. External watchdog for the Checkmk server itself (e.g. Home Assistant HTTP sensor on the web UI) — if optiplex-two dies, nothing alerts.
