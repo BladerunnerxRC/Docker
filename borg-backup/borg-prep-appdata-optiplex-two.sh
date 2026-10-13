@@ -50,16 +50,6 @@ docker network ls > "$TMP/docker/docker-networks.txt" 2>/dev/null || true
 docker inspect $(docker ps -aq) > "$TMP/docker/docker-inspect-all.json" 2>/dev/null || true
 
 # -----------------------------
-# Compose project: statping
-# -----------------------------
-if [ -d /data/compose/14 ]; then
-  rsync -a --delete \
-    --exclude='*.db-wal' \
-    --exclude='*.db-shm' \
-    /data/compose/14/ "$TMP/apps/data-compose-14/"
-fi
-
-# -----------------------------
 # Compose project: portainer
 # -----------------------------
 if [ -d /opt/docker/compose/portainer ]; then
