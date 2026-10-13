@@ -88,15 +88,6 @@ if docker ps --format '{{.Names}}' | grep -qx 'searxng-valkey'; then
   sleep 2
 fi
 
-# -----------------------------
-# PostgreSQL dump: container postgres
-# -----------------------------
-if docker ps --format '{{.Names}}' | grep -qx 'postgres'; then
-  docker exec 'postgres' pg_dumpall -U 'statup' \
-    > "$TMP/databases/postgres-pg_dumpall.sql" 2>/dev/null \
-    || echo "WARN: pg_dumpall failed for postgres"
-fi
-
 # SQLite-safe backup of /volume1/docker/portracker/portracker.db
 if [ -f '/volume1/docker/portracker/portracker.db' ]; then
   sqlite3 '/volume1/docker/portracker/portracker.db' "PRAGMA wal_checkpoint(FULL);" >/dev/null 2>&1 || true

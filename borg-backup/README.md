@@ -278,7 +278,8 @@ host at survey time. Behavior:
 - Collects system metadata, package list, and Docker inventory.
 - Snapshots the `statping` (`/data/compose/14`) and `portainer` (`/opt/docker/compose/portainer`) compose projects.
 - Snapshots app data under `/volume1/docker/portracker`, with a SQLite-safe backup of `portracker.db`.
-- Flushes Valkey/Redis persistence for `searxng-valkey`, and runs `pg_dumpall` against the `postgres` container.
+- Flushes Valkey/Redis persistence for `searxng-valkey`. (The `pg_dumpall` of the statping `postgres` container was removed 2026-10-12; that container no longer exists on the host.)
+- Does not dump `mariadb-kodi`; that database has its own Borg job, [`KodiDB/borg-prep-kodidb.sh`](../KodiDB/borg-prep-kodidb.sh).
 - Captures Tailscale state and k3s datastore/config when present.
 - Publishes the snapshot atomically by staging to a temp directory, then moving into `latest`.
 
