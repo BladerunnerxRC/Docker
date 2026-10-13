@@ -97,6 +97,20 @@ if docker ps --format '{{.Names}}' | grep -qx 'postgres'; then
     || echo "WARN: pg_dumpall failed for postgres"
 fi
 
+# -----------------------------
+# Checkmk site backup: container checkmk, site cmk
+# Hand-added 2026-10-12 (not from the survey) - regenerating this script with
+# borg-backup-survey.sh will drop this block. The raw checkmk_checkmk-sites volume is
+# also captured by Borg, but may be mid-write; restore from this archive (omd restore).
+# Written to .partial and renamed on success so a failed run never looks like a good backup.
+# -----------------------------
+if docker ps --format '{{.Names}}' | grep -qx 'checkmk'; then
+  docker exec checkmk omd backup cmk - \
+    > "$TMP/databases/checkmk-cmk.omd.tar.gz.partial" 2>/dev/null \
+    && mv "$TMP/databases/checkmk-cmk.omd.tar.gz.partial" "$TMP/databases/checkmk-cmk.omd.tar.gz" \
+    || { rm -f "$TMP/databases/checkmk-cmk.omd.tar.gz.partial"; echo "WARN: omd backup failed for checkmk"; }
+fi
+
 # SQLite-safe backup of /volume1/docker/portracker/portracker.db
 if [ -f '/volume1/docker/portracker/portracker.db' ]; then
   sqlite3 '/volume1/docker/portracker/portracker.db' "PRAGMA wal_checkpoint(FULL);" >/dev/null 2>&1 || true

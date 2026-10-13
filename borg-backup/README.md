@@ -279,6 +279,7 @@ host at survey time. Behavior:
 - Snapshots the `statping` (`/data/compose/14`) and `portainer` (`/opt/docker/compose/portainer`) compose projects.
 - Snapshots app data under `/volume1/docker/portracker`, with a SQLite-safe backup of `portracker.db`.
 - Flushes Valkey/Redis persistence for `searxng-valkey`, and runs `pg_dumpall` against the `postgres` container.
+- Runs `omd backup cmk -` against the `checkmk` container to `databases/checkmk-cmk.omd.tar.gz`, a consistent online archive of the Checkmk site (restore with `omd restore`). Hand-added 2026-10-12, so regenerating this script with the survey drops it.
 - Captures Tailscale state and k3s datastore/config when present.
 - Publishes the snapshot atomically by staging to a temp directory, then moving into `latest`.
 
