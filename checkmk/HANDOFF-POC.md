@@ -1,6 +1,6 @@
 # Checkmk Deployment — Session Handoff
 
-> Last updated 2026-10-12 (end of first deployment session). Read this first, then continue from "Next steps".
+> Last updated 2026-10-13 (alert cleanup session). Read this first, then continue from "Next steps".
 > Host addresses, hardware specs, and other environment details live in the gitignored
 > `HANDOFF-POC.local.md` next to this file (local only — not in the public repo).
 
@@ -77,6 +77,17 @@ See `HANDOFF-POC.local.md` for IPs, OS, CPU/RAM/disk per host.
    These budget scheduling only (K3s enforces `pods`), so Docker containers outside K3s are not capped.
 6. **PRs merged:** #21 (host details → gitignored local file), #23 (TZ fix).
 
+## Completed (2026-10-13) — alert cleanup
+1. **optiplex-docker stale NFS mounts removed** (`/mnt/docker_grafana_data`, `/mnt/docker_postgres_main_data`, `/mnt/docker_postgres_main_dumps` from the NAS). They were CRIT `NFS mount … State: Hanging`. No container used them. The fstab lines were still present with `x-systemd.automount`: lazily unmounted, automount units stopped, fstab lines commented out (backup `/etc/fstab.bak.2026-10-13`), `daemon-reload` + `reset-failed`, empty mountpoint dirs deleted. See gotcha 10.
+2. **smiddleware memory cgroup enabled** (Pi 5). Container `Memory` services were UNKN ("Reported total memory is 0 B"). Appended `cgroup_enable=memory cgroup_memory=1` to `/boot/firmware/cmdline.txt` (backup `cmdline.txt.bak.2026-10-13`), rebooted. Verified: `memory` in `/sys/fs/cgroup/cgroup.controllers`; `docker stats` shows a 7.87 GiB limit. See gotcha 9.
+3. **smiddleware `/mnt/backups` (Borg NFS share) now mounts at boot.** It had `x-systemd.automount,x-systemd.idle-timeout=600`, so it only mounted on first access and dropped after 10 idle minutes, which makes the Checkmk NFS service come and go. Removed both options (kept `_netdev,nofail`; backup `/etc/fstab.bak.2026-10-13`), stopped the automount unit, `daemon-reload`, remounted. Verified single `nfs4` mount, no `autofs`.
+4. **NFS usage levels:** rule in Main folder, no conditions, ruleset "Network file system - overall status and usage (e.g. NFS)" (Service Monitoring Rules, not Enforced Services): warn 85% / crit 90%. Every NFS mount points at NAS volume1 (82–83% used on 2026-10-13), so all of them WARN together. Once smithvault is on SNMP, monitor volume1 there and drop the usage levels from this rule.
+5. **optiplex-docker `/mnt` strays removed:** `borg_optiplex-threels` (mkdir typo) and `SYSBAK_borgrepos_optiplex-two` (pre-rename mountpoint) — empty, unmounted, not in fstab, not used by `borg-backup`. Verified all four Borg repo bind mounts (`/mnt/borg_optiplex-{two,three}`, `/mnt/borg_smiddleware`, `/mnt/backups/borgrepo`) are NFS-backed — no Borg data lands on local disk.
+   Then removed `x-systemd.automount,x-systemd.idle-timeout=600` from those four fstab lines (backup `/etc/fstab.bak.2026-10-13-borg`) for consistency with smiddleware: stopped `borg-backup`, umount + stop each `.automount` (`systemd-escape -p --suffix=automount`), `daemon-reload`, remounted, started `borg-backup`; container sees the repos (`#recycle` = Synology share). **Left alone:** `Software_Backup` (fstab line 29) and the Manyfold bind mount `/srv/manyfold/library_nas` (line 30) — no idle timeout, and the bind depends on that automount.
+6. **optiplex-three `systemd-networkd-wait-online` fixed.** `enp1s0` (no cable) was in netplan, so every boot timed out after 2 min and the unit failed. `sudo netplan set ethernets.enp1s0.optional=true` (writes `70-netplan-set.yaml`, safe from cloud-init), `netplan generate`, `networkctl reload` (no interface bounce), restarted the unit, `reset-failed`. Verified `active (exited)`. `enp1s0` still shows `configuring` in `networkctl` — expected with no carrier; it's just no longer required for online. `enp2s0` is the live NIC. Real test is the next reboot.
+7. **optiplex-two `logrotate.service` fixed** (Systemd Service Summary CRIT). Failing nightly since at least Oct 7: `/etc/logrotate.d/cloud-init` (pkg `cloud-init`) and `cloud-init-base` (pkg `cloud-init-base`) are identical and both rotate `/var/log/cloud-init.log` → "duplicate log entry". Moved the old one to `/root/logrotate.d-cloud-init.old` (outside `logrotate.d`, which would still read a `.bak`); manual run clean. dpkg won't restore an admin-deleted conffile. Same fix applied proactively on optiplex-docker (identical files, not yet failed). optiplex-three only has `cloud-init-base` — clean. See gotcha 12.
+8. **Diagnosed Check_MK Discovery WARN** on `optiplex-docker_portainer-ee`: 5 unmonitored services + 5 new host labels never accepted (the container hosts were created but not fully discovered). Fix is in open items. See gotcha 11.
+
 ## Gotchas learned
 1. **TZ with `_` crash-loops the container.** Checkmk 2.5.0 `docker-entrypoint.sh` runs `sed -i -E "s_^TZ=.*_TZ=\"${TZ}\"_"` on every start after the first; the `_` in `America/New_York` breaks the expression (`char 26: unknown option to 's'`), `set -e` exits, `restart: unless-stopped` loops. First boot works (it appends instead), so it only shows on redeploy. Upstream bug — could be reported.
 2. **`CMK_PASSWORD` is read once**, at site creation. Changing it later does nothing; use `docker exec -it checkmk su - cmk -c "cmk-passwd cmkadmin"`.
@@ -86,10 +97,24 @@ See `HANDOFF-POC.local.md` for IPs, OS, CPU/RAM/disk per host.
 6. **Ubuntu 26.04 uses Rust coreutils/sudo-rs**: errors look like `(os error 2)`; `tee` cannot create a missing directory (`/etc/check_mk` only exists after the agent package is installed).
 7. **Heredocs pasted into a terminal** often arrive incomplete (shell sits at `>`). Prefer single-line `printf ... | sudo tee`.
 8. `mk_docker.py ... | head` ends in `BrokenPipeError` — harmless, caused by `head`.
+9. **Pi 5 container Memory UNKN** ("Reported total memory is 0 B"): Pi firmware injects `cgroup_disable=memory`, so Docker reports a 0 B limit. Fixed on smiddleware by appending `cgroup_enable=memory cgroup_memory=1` to the single line in `/boot/firmware/cmdline.txt` (later arg wins) and rebooting. Redo after any reimage.
+10. **Removing an fstab line doesn't unmount.** With `x-systemd.automount`, systemd re-mounts on any access. Comment out the line, `systemctl stop <unit>.automount`, `daemon-reload`, `reset-failed`. The Checkmk agent reads `/proc/mounts`, not fstab; stale NFS mounts show as `NFS mount … State: Hanging` (CRIT).
+11. **Check_MK Discovery WARN on container hosts** = unaccepted services/labels. Run bulk discovery on the `Docker containers` folder; the `cmk/docker_object:container` label must be accepted for the host-state rule to apply.
+12. **Ubuntu `cloud-init` + `cloud-init-base` logrotate overlap:** both packages ship the same rotation for `/var/log/cloud-init.log`, so `logrotate.service` fails nightly ("duplicate log entry") and Checkmk's Systemd Service Summary goes CRIT. Fix: `sudo mv /etc/logrotate.d/cloud-init /root/logrotate.d-cloud-init.old && sudo systemctl start logrotate`.
 
 ## Open items
 - **Activate pending changes** in Checkmk if the Changes badge is non-zero (folder agent-setting fix).
+- **Discovery cleanup (from 2026-10-13):**
+  - optiplex-docker: run service discovery, remove the 3 vanished `NFS mount` services, activate.
+  - smiddleware: run service discovery to add `NFS mount /mnt/backups`, activate.
+  - `Docker containers` folder: bulk discovery, mode "Add unmonitored services and new host labels", activate. Clears the Check_MK Discovery WARNs and applies the `cmk/docker_object:container` label the host-state rule needs.
+  - Add a **Periodic service discovery** rule on that folder that automatically adds unmonitored services and new host labels (optionally removes vanished ones) so container churn doesn't raise WARNs.
+  - Confirm `Memory` is OK on `smiddleware_adguardhome` and `smiddleware_traefik`; if still UNKN, rediscover both.
+- **optiplex-docker:** after the next clean reboot, confirm no NFS mounts return (`findmnt -t nfs,nfs4`), then delete `/etc/fstab.bak.2026-10-13`.
 - **Home Assistant:** host `homeassistant` exists. Still needed: SNMP credentials rule (community from the SNMPD add-on config — keep out of Git/chat), HTTP rule for `:8123`, then discovery.
+- **optiplex-three `Systemd Service Summary` CRIT (1 failed unit left) — deferred, acknowledge in Checkmk:**
+  - `smartmontools`: smartd exits "No devices to monitor" because the only disk is eMMC (`mmcblk0`, no SMART). **Plan: install the new NVMe and clone the eMMC to it**; smartd should then start on its own (`sudo systemctl restart smartmontools`, then `reset-failed`). If the NVMe plan falls through: `sudo systemctl disable --now smartmontools && sudo systemctl reset-failed smartmontools`. After the NVMe goes in, also install `smart_posix` there. May also pull the unused second NIC (`enp1s0` — an M.2 A+E-key Wi-Fi-slot-to-Ethernet adapter, PCIe x1) at the same time for another OptiPlex; confirm first which slot the NVMe uses (needs M-key; if the Wi-Fi slot is the only free one, the NIC adapter must come out and the NVMe would need an E-key adapter at x1): afterwards `sudo netplan set ethernets.enp1s0=null && sudo netplan generate && sudo networkctl reload`. On the receiving host: needs a free M.2 A/E-key Wi-Fi slot (often occupied by the Wi-Fi card), add it to netplan (`optional: true` if unplugged), and if it's a K3s node confirm flannel stays on the existing interface.
+  - ~~`systemd-networkd-wait-online`~~ — fixed 2026-10-13, see Completed.
 - **optiplex-three is cordoned** (`Ready,SchedulingDisabled`) — predates this session. Confirm intentional, else `kubectl uncordon optiplex-three`.
 - **optiplex-docker:** confirm `smart_posix` moved to `plugins/300/` and `docker.cfg` = `combined`; run discovery.
 - **Statping decommission:** repo side in PR #24. Host side: on optiplex-two, `docker volume ls -f dangling=true` (2 orphaned volumes expected), archive if wanted, delete the Portainer stack if listed, remove volumes and `/data/compose/14`.
@@ -127,12 +152,14 @@ kubectl scale -n default deploy/librenms-rrdcached sts/librenms-redis-master sts
 **Step C — after ~2 weeks:** final DB dump to NAS → `helm uninstall librenms -n default` → delete leftover PVCs (statefulset volumes, plus `librenms-app-pvc`/`librenms-db-pvc` on **manual** PVs that need their own cleanup) → remove Dashy tile, any AdGuard rewrite, free the MetalLB IP → update this doc.
 
 ## Next steps
-0. **LibreNMS retirement, Step A** (above) — planned for 2026-10-13.
-1. Home Assistant SNMP + HTTP (open items above).
-2. Traefik dynamic route on smiddleware: `checkmk.shome` → optiplex-two:8081, preserve `/cmk/`, redirect `/` → `/cmk/`, Step-CA leaf cert.
-3. External watchdog for the Checkmk server itself (e.g. Home Assistant HTTP sensor on the web UI) — if optiplex-two dies, nothing alerts.
-4. Firewall review: TCP 6556 (server→agents), TCP 8000 (agents→server), UDP 161 (SNMP). IoT network is HA-only — narrow SRM rule or monitor via HA.
-5. Kubernetes monitoring: Checkmk Kubernetes special agent + cluster collector (from optiplex-docker, the control plane).
-6. Optional: SSH datasource for smiddleware to encrypt its agent traffic; "Checkmk Agent installation auditing" rule to silence the TLS WARN on smiddleware.
-7. Optional: notifications (none configured yet), host tags/folders, parents (router/switch).
-8. Pin the image to a specific 2.5.0p patch.
+0. **Discovery cleanup** (open items) — quick, and it clears the remaining WARN/UNKN noise before adding more hosts.
+1. **LibreNMS retirement, Step A** (above) — was planned for 2026-10-13; not started.
+2. Home Assistant SNMP + HTTP (open items above).
+3. Traefik dynamic route on smiddleware: `checkmk.shome` → optiplex-two:8081, preserve `/cmk/`, redirect `/` → `/cmk/`, Step-CA leaf cert.
+4. External watchdog for the Checkmk server itself (e.g. Home Assistant HTTP sensor on the web UI) — if optiplex-two dies, nothing alerts.
+5. Firewall review: TCP 6556 (server→agents), TCP 8000 (agents→server), UDP 161 (SNMP). IoT network is HA-only — narrow SRM rule or monitor via HA.
+6. Kubernetes monitoring: Checkmk Kubernetes special agent + cluster collector (from optiplex-docker, the control plane).
+7. Optional: SSH datasource for smiddleware to encrypt its agent traffic; "Checkmk Agent installation auditing" rule to silence the TLS WARN on smiddleware.
+8. Optional: notifications (none configured yet), host tags/folders, parents (router/switch).
+9. Pin the image to a specific 2.5.0p patch.
+10. Optional: move optiplex-three's M.2 Wi-Fi-slot Ethernet adapter (see open items) to **optiplex-two** as a dedicated NAS/storage link, so Borg backups (and the Checkmk site backup) stay off its main interface. All OptiPlex boards are near-identical (smiddleware is the Pi), so the slot should fit. Check the slot is free first: `lspci -nn | grep -i -E 'network|ethernet|wireless'` (no Wi-Fi controller listed = likely empty; a BIOS-disabled card also hides). Then: static IP on the storage subnet in netplan (`optional: true` until cabled), point the NFS/Borg target at the NAS's IP on that link, and confirm K3s/flannel stays on the existing interface.
