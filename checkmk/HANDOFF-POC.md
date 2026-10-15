@@ -140,4 +140,21 @@ Topology result: `sw-t2600g → <docker node> → stack-<stack> → containers`.
 7. Agent rollout script for all four hosts + register with `cmk-agent-ctl register` (port 8000, TLS).
 8. Firewall: TCP 6556 (server→agents), TCP 8000 (agents→server), UDP 161 (SNMP). IoT network is HA-only — needs a narrow SRM rule or monitor via HA.
 9. Kubernetes monitoring via Checkmk Kubernetes special agent + cluster collector.
-10. Add `checkmk-sites` volume to Borg backup set.
+10. **TODO: proper Checkmk backup in the optiplex-two Borg run.** Status today: Borg already copies `/var/lib/docker/volumes` raw on optiplex-two, so `checkmk-sites` is included, but as a *live* file copy (RRDs/state can be mid-write). Not a guaranteed-consistent, restorable backup.
+    - Add a Checkmk section to [`borg-backup/borg-prep-appdata-optiplex-two.sh`](../borg-backup/borg-prep-appdata-optiplex-two.sh), next to the existing DB-dump blocks. Write a consistent `omd backup` into the staged snapshot, so it lands in `latest/` and gets the same atomic publish:
+      ```bash
+      # Checkmk site backup (consistent, restorable with omd restore; same version required)
+      if docker ps --format '{{.Names}}' | grep -qx 'checkmk'; then
+        docker exec checkmk su - cmk -c 'omd backup --no-past /tmp/cmk-borg.tar.gz' \
+          && docker cp checkmk:/tmp/cmk-borg.tar.gz "$TMP/apps/checkmk-omd-backup-nopast.tar.gz" \
+          || echo "WARN: omd backup failed for checkmk"
+        docker exec checkmk rm -f /tmp/cmk-borg.tar.gz
+        docker exec checkmk cat /omd/sites/cmk/.version_meta/version 2>/dev/null \
+          > "$TMP/apps/checkmk-version.txt" || true   # restore needs the same image version
+      fi
+      ```
+      `--no-past` keeps it small (config + state, no metric history). Graph history stays covered by the raw volume copy. Drop `--no-past` if a full archive is wanted and size allows.
+    - Deploy the updated prep script the usual way (see `borg-backup/README.md`), run the Borg UI job once, then check `latest/apps/checkmk-omd-backup-nopast.tar.gz` exists and is non-trivial in size.
+    - Test a restore once into a throwaway container of the **same image tag** (`omd restore`), then record the result here.
+    - Contains secrets (automation secret, `~/etc/ha_token`). Fine inside the Borg repo, but never copy it into this Git repo.
+    - Optional later: bind mount `/opt/checkmk-backup:/backup` in `docker_compose.yml` + a GUI *Site backup* job if GUI-driven restores are wanted. Not required for Borg.
