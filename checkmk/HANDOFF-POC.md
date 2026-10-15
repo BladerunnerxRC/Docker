@@ -70,6 +70,7 @@ Source of truth: [`docker_compose.yml`](docker_compose.yml) in this folder.
 |---|---|---|
 | [`snmp-preflight.sh`](snmp-preflight.sh) | Test SNMP from inside the Checkmk container before adding a device | header comment |
 | [`create-piggyback-hosts.sh`](create-piggyback-hosts.sh) | Create container hosts from piggyback data and place them in stack folders | [`create-piggyback-hosts.md`](create-piggyback-hosts.md) |
+| [`ha_datasource.py`](ha_datasource.py) | Datasource program: HA OS host resources (System Monitor sensors via HA API) | [`homeassistant.md`](homeassistant.md) |
 
 ## Checkmk host layout
 Established 2026-10-14/15. Site `cmk` runs **2.5.0p15**. IPs and SNMP credentials are in `HANDOFF-POC.local.md` or Checkmk only. Never put them in this public file.
