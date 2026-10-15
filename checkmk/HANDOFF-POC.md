@@ -1,6 +1,6 @@
 # Checkmk Deployment — Session Handoff
 
-> Context carried over from a claude.ai chat (2026-10-12). Read this first, then continue from "Next steps".
+> Context carried over from a claude.ai chat (2026-10-12), updated 2026-10-15. Read this first, then continue from "Next steps".
 > Host addresses, hardware specs, and other environment details live in the gitignored
 > `HANDOFF-POC.local.md` next to this file (local only — not in the public repo).
 
@@ -65,6 +65,12 @@ kubectl get node optiplex-two -o jsonpath='{.status.capacity.memory}{"\n"}{.stat
 ## Stack
 Source of truth: [`docker_compose.yml`](docker_compose.yml) in this folder.
 
+## Scripts in this folder
+| Script | Purpose | Docs |
+|---|---|---|
+| [`snmp-preflight.sh`](snmp-preflight.sh) | Test SNMP from inside the Checkmk container before adding a device | header comment |
+| [`create-piggyback-hosts.sh`](create-piggyback-hosts.sh) | Create container hosts from piggyback data and place them in stack folders | [`create-piggyback-hosts.md`](create-piggyback-hosts.md) |
+
 ## Checkmk host layout
 Established 2026-10-14/15. Site `cmk` runs **2.5.0p15**. IPs and SNMP credentials are in `HANDOFF-POC.local.md` or Checkmk only. Never put them in this public file.
 
@@ -91,7 +97,7 @@ Topology result: `sw-t2600g → <docker node> → stack-<stack> → containers`.
 - Agent plugin `mk_docker.py` is installed by hand on each Docker node (Community edition has no Agent Bakery): `/usr/lib/check_mk_agent/plugins/mk_docker.py` (sync, **not** `plugins/300/`), plus `python3-docker`.
 - `/etc/check_mk/docker.cfg` → `container_id: combined`, so host names are **`<node>_<container>`** (e.g. `optiplex-docker_komga`). A host named after the bare container gets no data.
 - `skip_sections: docker_container_agent` (no agents inside containers).
-- Bulk-create with [`create-piggyback-hosts.sh`](create-piggyback-hosts.sh) (dry run by default, `--apply` to change). New hosts get no attributes and go into their Compose project's stack folder. The script creates the folder and the stack host when a project has ≥ 2 containers. It never touches existing hosts.
+- Bulk-create with [`create-piggyback-hosts.sh`](create-piggyback-hosts.sh): usage, scope and limits are in [`create-piggyback-hosts.md`](create-piggyback-hosts.md) (dry run by default, `--apply` to change). New hosts get no attributes and go into their Compose project's stack folder. The script creates the folder and the stack host when a project has ≥ 2 containers. It never touches existing hosts.
 - `Docker container health` service = the container's own `HEALTHCHECK` (Dockerfile or compose `healthcheck:`); Checkmk only reads Docker's status. Containers without one get no health service, so add healthchecks to stacks that lack them.
 - "No rate available (time anomaly)" / "Initializing counters" on a new container is normal for 1–2 check cycles. If it persists, check that the piggyback files refresh every minute and that node clocks agree.
 
