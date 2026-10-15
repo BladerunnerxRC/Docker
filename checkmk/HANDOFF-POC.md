@@ -149,7 +149,7 @@ Topology result: `sw-t2600g → <docker node> → stack-<stack> → containers`.
           && docker cp checkmk:/tmp/cmk-borg.tar.gz "$TMP/apps/checkmk-omd-backup-nopast.tar.gz" \
           || echo "WARN: omd backup failed for checkmk"
         docker exec checkmk rm -f /tmp/cmk-borg.tar.gz
-        docker exec checkmk cat /omd/sites/cmk/.version_meta/version 2>/dev/null \
+        docker exec checkmk su - cmk -c 'omd version -b' 2>/dev/null \
           > "$TMP/apps/checkmk-version.txt" || true   # restore needs the same image version
       fi
       ```
