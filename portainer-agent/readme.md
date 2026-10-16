@@ -33,13 +33,15 @@ on your own machine, because this repo is public.
 
 ## Setting up a host
 
-Each host keeps its files in `~/docker-compose-scripts/portainer_agent/`.
+Each host keeps its files in `~/portainer-agent/`. Hosts set up before this used
+`~/docker-compose-scripts/portainer_agent/`. To move one of those, see
+[Moving a host from the old directory](#moving-a-host-from-the-old-directory).
 
 ```bash
-mkdir -p ~/docker-compose-scripts/portainer_agent
-cd ~/docker-compose-scripts/portainer_agent
+mkdir -p ~/portainer-agent
+cd ~/portainer-agent
 curl -fsSLO https://raw.githubusercontent.com/BladerunnerxRC/Docker/main/portainer-agent/sync-portainer-agent.sh
-chmod +x sync-portainer-agent.sh
+chmod 755 sync-portainer-agent.sh
 ```
 
 Create a `.env` file in the same directory. The script needs the server URL to check the
@@ -59,6 +61,78 @@ Then run the script. If there's no compose file yet, it does a first install:
 After a first install, change the port line in `docker-compose.yml` to
 `"<lan-ip>:9001:9001"` and run the script again with `--force` to apply it. Later syncs keep
 that binding.
+
+## Owner and permissions
+
+Everything in `~/portainer-agent/` belongs to your own user, not root. Run the script as that
+user, without `sudo`.
+
+| Path                      | Owner         | Mode  | Why                                                    |
+|---------------------------|---------------|-------|--------------------------------------------------------|
+| `~/portainer-agent/`      | `$USER:$USER` | `755` | The script writes the compose file and backups here.   |
+| `sync-portainer-agent.sh` | `$USER:$USER` | `755` | Executable. It has no secrets in it.                   |
+| `docker-compose.yml`      | `$USER:$USER` | `644` | The script rewrites it on every sync.                  |
+| `.env`                    | `$USER:$USER` | `600` | It can hold `AGENT_SECRET`, so only you can read it.   |
+
+To set these, or to fix files that ended up owned by root:
+
+```bash
+cd ~/portainer-agent
+sudo chown -R "$USER:$USER" .
+chmod 755 . sync-portainer-agent.sh
+chmod 644 docker-compose.yml
+chmod 600 .env
+```
+
+The backups (`docker-compose.yml.bak.*`) get your umask, which is usually `644`.
+
+**Docker access:** the script runs `docker` without `sudo`, so your user must be in the
+`docker` group. Check with `id -nG | grep -w docker`. If it isn't, add it, then log out and back
+in:
+
+```bash
+sudo usermod -aG docker "$USER"
+```
+
+Anyone in the `docker` group effectively has root on the host, so add only accounts that
+already have admin rights.
+
+**Why not `sudo`:** on Ubuntu, `sudo` sets `HOME` to `/root`. The script would then look in
+`/root/portainer-agent`, find no compose file, and do a first install there with a bare
+`9001:9001` binding. Any files it created would also be owned by root. If you have to use
+`sudo`, pass the directory explicitly:
+`sudo COMPOSE_DIR=/home/<user>/portainer-agent ./sync-portainer-agent.sh`.
+
+## Moving a host from the old directory
+
+The script handles the move. If `~/portainer-agent` has no compose file and
+`~/docker-compose-scripts/portainer_agent/docker-compose.yml` exists, it copies that compose
+file and its `.env` across before syncing, so the host keeps its LAN-IP binding. Set up the
+new directory as for a new host, then run the script:
+
+```bash
+mkdir -p ~/portainer-agent
+cd ~/portainer-agent
+curl -fsSLO https://raw.githubusercontent.com/BladerunnerxRC/Docker/main/portainer-agent/sync-portainer-agent.sh
+chmod 755 sync-portainer-agent.sh
+
+./sync-portainer-agent.sh --dry-run   # reads the old directory, copies nothing
+./sync-portainer-agent.sh
+```
+
+Docker Compose names a project after its directory, so the project changes from
+`portainer_agent` to `portainer-agent`. The move always recreates the container, even if the
+version hasn't changed, so that it joins the new project. The script reports that the existing
+container belongs to project `portainer_agent` and removes it before recreating. That's
+expected for this move.
+
+The script doesn't delete the old directory. When the endpoint is green in Portainer, delete
+it yourself. If you leave it, a `docker compose up` run from there later will collide with the
+new container:
+
+```bash
+rm -rf ~/docker-compose-scripts/portainer_agent
+```
 
 ## Updating to a new version
 
@@ -105,7 +179,8 @@ These environment variables override the defaults:
 
 | Variable           | Default                                       |
 |--------------------|-----------------------------------------------|
-| `COMPOSE_DIR`      | `~/docker-compose-scripts/portainer_agent`    |
+| `COMPOSE_DIR`      | `~/portainer-agent`                           |
+| `LEGACY_DIR`       | `~/docker-compose-scripts/portainer_agent` (the old directory to move from) |
 | `REPO`             | `BladerunnerxRC/Docker`                       |
 | `REF`              | `main` (a branch, tag or commit SHA)          |
 | `SRC_PATH`         | `portainer-agent/docker-compose.yml`          |

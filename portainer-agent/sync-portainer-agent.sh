@@ -16,6 +16,9 @@
 #      recreates, waits for /ping
 #   5. Restores the backup and recreates on failure
 #   6. Prunes dangling images only after a verified-good result
+#
+# A host still set up in the old ~/docker-compose-scripts/portainer_agent is
+# moved over on the first run: its compose file and .env are copied here.
 
 set -euo pipefail
 
@@ -28,6 +31,9 @@ CONTAINER="portainer_agent"
 AGENT_PORT="9001"
 AGENT_HOST="${AGENT_HOST:-}"
 
+# Where hosts kept the agent before ~/portainer-agent.
+LEGACY_DIR="${LEGACY_DIR:-${HOME}/docker-compose-scripts/portainer_agent}"
+
 # Source on GitHub. REF can be a branch, tag or commit SHA. raw.githubusercontent
 # caches for a few minutes, so pass a commit SHA to get a just-pushed change.
 REPO="${REPO:-BladerunnerxRC/Docker}"
@@ -38,7 +44,11 @@ SRC_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${SRC_PATH}"
 # Portainer server — the new tag must match its version. Set it in the
 # environment or in ${COMPOSE_DIR}/.env (gitignored), e.g.
 #   PORTAINER_SERVER=https://<server-ip>:9443
-[[ -f "${COMPOSE_DIR}/.env" ]] && . "${COMPOSE_DIR}/.env"
+if [[ -f "${COMPOSE_DIR}/.env" ]]; then
+    . "${COMPOSE_DIR}/.env"
+elif [[ ! -f "$COMPOSE_FILE" && -f "${LEGACY_DIR}/.env" ]]; then
+    . "${LEGACY_DIR}/.env"    # not moved yet
+fi
 PORTAINER_SERVER="${PORTAINER_SERVER:-}"
 
 VERIFY_RETRIES=15      # attempts
@@ -48,6 +58,8 @@ DRY_RUN=0
 FORCE=0
 NEW_FILE=""           # downloaded compose; global so the EXIT trap can clean it up
 FIRST_INSTALL=0
+MIGRATE=0
+CURRENT_FILE="$COMPOSE_FILE"   # the host's compose file as it is now; the legacy one in a dry-run move
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -155,7 +167,7 @@ fetch_compose() {
     sed -i 's/\r$//' "$out"
 
     # The template publishes on every interface; keep this host's LAN IP.
-    ((FIRST_INSTALL)) || bind_ip=$(file_bind_ip "$COMPOSE_FILE")
+    ((FIRST_INSTALL)) || bind_ip=$(file_bind_ip "$CURRENT_FILE")
     if [[ -n "$bind_ip" ]]; then
         sed -i -E "s|^(\s*-\s*\"?)${AGENT_PORT}:${AGENT_PORT}|\1${bind_ip}:${AGENT_PORT}:${AGENT_PORT}|" "$out"
         info "Kept port binding ${bind_ip}:${AGENT_PORT}"
@@ -203,7 +215,7 @@ Usage: $(basename "$0") [--dry-run] [--force]
   --dry-run   Show the diff and target version, change nothing
   --force     Skip the server-version guard; recreate even if unchanged
 
-Environment: COMPOSE_DIR, REPO, REF, SRC_PATH, AGENT_HOST, PORTAINER_SERVER
+Environment: COMPOSE_DIR, LEGACY_DIR, REPO, REF, SRC_PATH, AGENT_HOST, PORTAINER_SERVER
 EOF
 }
 
@@ -219,7 +231,22 @@ main() {
     done
 
     command -v curl >/dev/null || die "curl is required"
-    if [[ ! -f "$COMPOSE_FILE" ]]; then
+    if [[ ! -f "$COMPOSE_FILE" && -f "${LEGACY_DIR}/docker-compose.yml" \
+          && ! "$LEGACY_DIR" -ef "$COMPOSE_DIR" ]]; then
+        MIGRATE=1
+        info "Found the old deployment in ${LEGACY_DIR} — moving it to ${COMPOSE_DIR}"
+        mkdir -p "$COMPOSE_DIR"
+        if ((DRY_RUN)); then
+            CURRENT_FILE="${LEGACY_DIR}/docker-compose.yml"
+        else
+            cp -p "${LEGACY_DIR}/docker-compose.yml" "$COMPOSE_FILE"
+            ok "Copied docker-compose.yml"
+            if [[ -f "${LEGACY_DIR}/.env" && ! -f "${COMPOSE_DIR}/.env" ]]; then
+                cp -p "${LEGACY_DIR}/.env" "${COMPOSE_DIR}/.env"
+                ok "Copied .env"
+            fi
+        fi
+    elif [[ ! -f "$COMPOSE_FILE" ]]; then
         FIRST_INSTALL=1
         info "No compose file at ${COMPOSE_FILE} — first install"
         mkdir -p "$COMPOSE_DIR"
@@ -245,22 +272,23 @@ main() {
     if ((FIRST_INSTALL)); then
         printf 'Local compose:  none\n'
     else
-        printf 'Local compose:  %s\n' "$(file_version "$COMPOSE_FILE")"
+        printf 'Local compose:  %s\n' "$(file_version "$CURRENT_FILE")"
     fi
     printf 'GitHub compose: %s\n' "${target:-none}"
     echo
 
     if ((FIRST_INSTALL)); then
         info "Bare ${AGENT_PORT}:${AGENT_PORT} listens on every interface — change it to <lan-ip>:${AGENT_PORT}:${AGENT_PORT} afterwards; later syncs keep it"
-    elif cmp -s "$new" "$COMPOSE_FILE"; then
-        if [[ "$prev" == "$target" ]] && ! ((FORCE)); then
+    elif cmp -s "$new" "$CURRENT_FILE"; then
+        # A move always recreates, so the container joins this directory's project.
+        if [[ "$prev" == "$target" ]] && ! ((FORCE || MIGRATE)); then
             ok "Compose file unchanged and agent already on ${target} — nothing to do"
             exit 0
         fi
         info "Compose file unchanged"
     else
         info "Changes from GitHub:"
-        diff -u --label current --label github "$COMPOSE_FILE" "$new" || true
+        diff -u --label current --label github "$CURRENT_FILE" "$new" || true
         echo
     fi
 
@@ -300,6 +328,10 @@ main() {
         docker image prune -f
         echo
         info "Confirm the endpoint is green in the Portainer UI before walking away."
+        if ((MIGRATE)); then
+            info "Moved from ${LEGACY_DIR}. Once the endpoint is green, delete it so it can't"
+            info "recreate the old container:  rm -rf ${LEGACY_DIR}"
+        fi
     else
         if ((up_ok)); then
             err "Agent did not respond after $((VERIFY_RETRIES * VERIFY_INTERVAL))s — rolling back to ${prev}"
