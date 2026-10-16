@@ -22,7 +22,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-COMPOSE_DIR="${COMPOSE_DIR:-${HOME}/docker-compose-scripts/portainer_agent}"
+COMPOSE_DIR="${COMPOSE_DIR:-${HOME}/portainer-agent}"
 COMPOSE_FILE="${COMPOSE_DIR}/docker-compose.yml"
 CONTAINER="portainer_agent"
 AGENT_PORT="9001"
