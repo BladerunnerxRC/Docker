@@ -84,7 +84,14 @@ running_version() {
 
 # Image tag written in a compose file.
 file_version() {
-    grep -oP 'image:\s*portainer/agent:\K\S+' "$1" | head -n1 || true
+    local v name
+    v=$(grep -oP 'image:\s*portainer/agent:\K\S+' "$1" | head -n1 || true)
+    # Older host files use ${AGENT_VERSION:?...}; show what .env sets it to.
+    if [[ "$v" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*) ]]; then
+        name="${BASH_REMATCH[1]}"
+        v="${!name:-unset} (from \$${name})"
+    fi
+    echo "$v"
 }
 
 # LAN IP in a "<ip>:9001:9001" binding, or empty for a bare "9001:9001".
