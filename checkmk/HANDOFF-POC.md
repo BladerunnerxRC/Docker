@@ -29,7 +29,7 @@ See `HANDOFF-POC.local.md` for IPs, OS, CPU/RAM/disk per host.
 - Internal domain pattern: `https://appname.shome`. Internal PKI: Step-CA.
 - Portainer GitOps from public repo `BladerunnerxRC/Docker`, ref `refs/heads/main`, Compose path `checkmk/docker_compose.yml`. Public repo — no Git authentication needed. Secrets go in Portainer stack env vars only.
 - Backups: Borg to Synology NAS.
-- LibreNMS/SNMP already running — decide later whether to retire it to avoid double SNMP polling.
+- LibreNMS decommissioned (confirmed 2026-10-17). Checkmk is now the only SNMP poller; network devices must be re-created in Checkmk.
 
 ## Decisions made
 - **Server host:** optiplex-two, Docker (not K3s, not native .deb).
