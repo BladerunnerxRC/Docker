@@ -74,5 +74,13 @@ Source of truth: [`docker_compose.yml`](docker_compose.yml) in this folder.
 6. Write Traefik dynamic route on smiddleware: `checkmk.shome` → `http://<optiplex-two>:8081`, preserve `/cmk/`, redirect `/` → `/cmk/`, Step-CA leaf cert.
 7. Agent rollout script for all four hosts + register with `cmk-agent-ctl register` (port 8000, TLS).
 8. Firewall: TCP 6556 (server→agents), TCP 8000 (agents→server), UDP 161 (SNMP). IoT network is HA-only — needs a narrow SRM rule or monitor via HA.
-9. Kubernetes monitoring via Checkmk Kubernetes special agent + cluster collector.
-10. Add `checkmk-sites` volume to Borg backup set.
+9. Synology NAS onboarding (SNMP only — no supported Checkmk agent for DSM). Hosts/IPs in local file.
+   - DSM: Control Panel → Terminal & SNMP → SNMP, enable **v2c** (Synology MIB guide: v2c needed for the full `.1.3.6.1.4.1.6574` tree). Checkmk host: SNMP v2c, bulkwalk on.
+   - DSM sends **no SNMP traps** — polling only; check interval = alert latency.
+   - After discovery, list built-in coverage: `docker exec -u cmk checkmk bash -lc "cmk -L | grep -i synology"` (expect system/power status, fans, disk status/temp, RAID, info, update; volume/CPU/mem/IO via HOST-RESOURCES + UCD).
+   - **Decision 2026-10-18: no custom drive-health plugin.** DSM's own notifications (email/push, working on all three NASes) already alert on drive health; Checkmk uses built-in checks only. Reasons: the plugin's only unique value was earlier warning from raw SMART counters, and SNMP gives no drive serials, so SMART rows can't be reliably matched to bays (the SMART table is not in bay order: on the DS920+, `/dev/sata1` = bay 3).
+   - SNMP probe 2026-10-18: all three NASes run DSM 7.4 and return the full Disk/RAID/SMART tables (incl. diskHealthStatus `.2.1.1.13`). Community fixed to match on all three.
+   - UPS: APC Back-UPS NS 675M1 on USB to the DS920+; the other NASes are DSM network-UPS clients (no UPS OIDs of their own). The Synology UPS MIB (`.4`) answers on the DS920+ only; RFC1628 UPS-MIB is absent. At discovery, check whether any built-in service picks it up. If none does, a small custom SNMP check is a candidate (alert on on-battery, charge <50%, runtime <5 min, battery age >4 y; graph runtime). Battery is original (mfr 2020-10-30) and was never self-tested as of 2026-10-18; replacement recommended.
+   - Router (SRM) gets only the Port MIB (`.109`) beyond standard MIBs — nothing new there.
+10. Kubernetes monitoring via Checkmk Kubernetes special agent + cluster collector.
+11. Add `checkmk-sites` volume to Borg backup set.
