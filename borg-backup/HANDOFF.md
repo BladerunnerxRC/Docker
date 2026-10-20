@@ -112,9 +112,12 @@ Confirm each before acting on it.
 6. **Last good archive per repo** — check Borg UI, or `borg list --last 1` against each repo.
 
 ## Next steps
-1. **optiplex-two, from the branch:** pull into `~/scripts/borgbackup-borg-local-script-backups`,
-   run a **fresh** survey there (not `--from`: the July state lacks home/named-volume data), review
-   the generated prep script, deploy with `--test`. Check in the test output:
+1. **optiplex-two, from the branch:** pull with `--branch borg-local-script-backups --dest
+   ~/scripts/borgbackup`, run a **fresh** survey there (not `--from`: the July state lacks
+   home/named-volume data), answer **N** at the deploy offer, review/edit the generated prep script,
+   check free space (`df -h /var/backups` vs `docker exec checkmk du -sh /omd/sites/cmk`; the
+   uncompressed omd archive needs ~2× the site size while `latest/` is rebuilt), then deploy with
+   `--test`. Check in the test output:
    - `Checkmk backup (checkmk, site cmk)` is `OK`. If `omd backup` rejects `--no-compression`,
      drop the flag and name the file `.omd.tar.gz` in the survey generator.
    - The prep run's total time. The Borg UI pre-backup time-out is 300 s; raise it if the run gets close.
