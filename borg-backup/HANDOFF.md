@@ -1,6 +1,6 @@
 # Borg Backup — Session Handoff
 
-> State as of 2026-10-20. Read this first, then continue from "Next steps".
+> State as of 2026-10-20. Read this first, then continue from "TODO".
 > Reference material (architecture, mounts, script behaviour, restore flow) lives in
 > [`README.md`](README.md); this file records only state, open items and what to do next.
 
