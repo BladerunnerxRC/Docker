@@ -28,7 +28,7 @@ inside the prep snapshot, so a backed-up host needs no write access to its own r
 - Prep scripts copy themselves to `metadata/prep-script.sh` and the deploy script's rollback
   copies to `metadata/script-backups/`, so every archive holds the script that made it.
 - Survey: Checkmk containers (`checkmk/check-mk-*`) get an `omd backup` of their site
-  (`CMK_SITE_ID`, default `cmk`) to `databases/<container>-<site>.omd.tar`, uncompressed so Borg
+  (`CMK_SITE_ID`, default `cmk`) to `databases/<container>-<site>-<version>-<YYYYmmdd-HHMMSS>.omd.tar`, uncompressed so Borg
   can deduplicate it, renamed into place only when `omd backup` succeeds. Replaces the
   hand-added block on the unmerged `borg-checkmk-omd-backup` branch, which regenerating dropped.
 - Deploy scripts for optiplex-two and smiddleware are checked in, so `pull-borg-scripts.sh`

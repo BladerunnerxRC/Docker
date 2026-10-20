@@ -1133,18 +1133,22 @@ EOF
 # 'omd backup' writes a consistent archive of a running site; restore it with 'omd restore'.
 # Uncompressed, so Borg can deduplicate it between runs. Written to .partial and renamed on
 # success, so a failed run never leaves something that looks like a good backup.
+# The name carries the Checkmk version and the backup time, for example
+# databases/${cname}-${site}-2.5.0p9.cce-20261020-031500.omd.tar ('unknown-version' if omd can't say).
 # -----------------------------
-section_start "Checkmk backup (${cname}, site ${site})" "databases/${cname}-${site}.omd.tar"
+CMK_FILE=""
 if docker ps --format '{{.Names}}' | grep -qx '${cname}'; then
-  if docker exec '${cname}' omd backup --no-compression '${site}' - \\
-       > "\$TMP/databases/${cname}-${site}.omd.tar.partial"; then
-    mv "\$TMP/databases/${cname}-${site}.omd.tar.partial" "\$TMP/databases/${cname}-${site}.omd.tar"
-  else
-    rm -f "\$TMP/databases/${cname}-${site}.omd.tar.partial"
-    warn "omd backup failed for ${cname} (site ${site})"
-  fi
-else
+  cmk_ver="\$(docker exec '${cname}' omd version '${site}' 2>/dev/null | awk '{v=\$NF} END {print v}' | tr -cd 'A-Za-z0-9._-' || true)"
+  CMK_FILE="databases/${cname}-${site}-\${cmk_ver:-unknown-version}-\$(date +%Y%m%d-%H%M%S).omd.tar"
+fi
+section_start "Checkmk backup (${cname}, site ${site})" "\$CMK_FILE"
+if [ -z "\$CMK_FILE" ]; then
   section_skip "container ${cname} not running"
+elif docker exec '${cname}' omd backup --no-compression '${site}' - > "\$TMP/\$CMK_FILE.partial"; then
+  mv "\$TMP/\$CMK_FILE.partial" "\$TMP/\$CMK_FILE"
+else
+  rm -f "\$TMP/\$CMK_FILE.partial"
+  warn "omd backup failed for ${cname} (site ${site})"
 fi
 section_end
 EOF

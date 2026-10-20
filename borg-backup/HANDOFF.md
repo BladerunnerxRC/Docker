@@ -59,7 +59,7 @@ and mounting `SYSBAK_borgrepos_<host>` would give each host write access to its 
   carries them off-host with no plan change.
 - Pull script → `~/scripts/borgbackup` (branch: `~/scripts/borgbackup-<branch>`), no sudo, no share.
 - Survey detects Checkmk containers and generates `omd backup --no-compression <site> -` →
-  `databases/checkmk-<site>.omd.tar`. Supersedes the `borg-checkmk-omd-backup` branch.
+  `databases/checkmk-<site>-<version>-<date-time>.omd.tar`. Supersedes the `borg-checkmk-omd-backup` branch.
 - Home copies exclude `borg-survey-*/`.
 - Deploy scripts for all three hosts are checked in, so the pull works everywhere.
 - `borg-optiplex-two-cleanup` (KodiDB wrapper IP fix, statping removal) is merged into this branch.
@@ -127,10 +127,10 @@ Confirm each before acting on it.
 
 ## Next steps
 1. ~~optiplex-two: fresh 3.0.0 survey, remove `mariadb-kodi` block, deploy with `--test`~~ — done
-   2026-10-19 (see above). Named-volume marker set. Deployed script committed (identical, `cmp`).
+   2026-10-19 (see above). Named-volume marker set. Deployed script committed (identical, `cmp`). Then the Checkmk archive name gained version + date-time: **redeploy on optiplex-two** (pull + `deploy --test`).
 2. ~~Commit the optiplex-two prep script~~ — done.
 3. In Borg UI: remove `/data/compose/14` from the optiplex-two plan, run it, and confirm the archive
-   has `databases/checkmk-cmk.omd.tar`, no `statup` paths, 0 pre-backup warnings. Note the
+   has `databases/checkmk-cmk-<version>-<date-time>.omd.tar`, no `statup` paths, 0 pre-backup warnings. Note the
    deduplicated size of the first two runs (how well Borg dedups the 1.7 GB omd tar). Fix the live
    KodiDB entity if open item 2 says so. Clean up the old survey folders in `~/scripts`.
 4. Merge the branch to `main` (PR); then optiplex-three: pull from `main`, deploy the 3.0.0 prep

@@ -130,7 +130,7 @@ flowchart TD
 
     WHAT -- "/etc, compose dirs, home" --> CFG["Copy back in place,<br/>fix owner and mode"]
     WHAT -- "Postgres" --> PG["Start an empty postgres container,<br/>psql -f databases/postgres-pg_dumpall.sql"]
-    WHAT -- "Checkmk site" --> CMK["docker cp databases/checkmk-cmk.omd.tar checkmk:/tmp/<br/>and chown it to cmk; then as site user cmk:<br/>omd stop, omd restore /tmp/checkmk-cmk.omd.tar, omd start"]
+    WHAT -- "Checkmk site" --> CMK["docker cp databases/checkmk-cmk-*.omd.tar checkmk:/tmp/<br/>and chown it to cmk; then as site user cmk:<br/>omd stop, omd restore /tmp/checkmk-cmk-*.omd.tar, omd start.<br/>Restore onto the same Checkmk version named in the file"]
     WHAT -- "SQLite" --> SQ["Stop the app, replace the .db with<br/>its *.sqlite-backup file,<br/>delete stale -wal and -shm files"]
     WHAT -- "Docker volume" --> VOL["Stop the stack, copy into<br/>/var/lib/docker/volumes/{volume}/_data"]
     WHAT -- "Tailscale state" --> TS{"Same machine?"}
@@ -281,7 +281,7 @@ the same day (the checked-in file matches `/usr/local/sbin`). Behavior:
   from `/var/lib/docker/volumes` (the plan includes it, so the warning is turned off on this host).
 - Copies `/home/thomas` and `/home/openclaw` (without `~/.cache` and `borg-survey-*` folders),
   `/volume1/docker/portracker` and `/opt/multi-gmail/tokens` (OAuth tokens - secret).
-- Checkmk: `omd backup --no-compression cmk` to `databases/checkmk-cmk.omd.tar` (about 1.7 GB,
+- Checkmk: `omd backup --no-compression cmk` to `databases/checkmk-cmk-<version>-<date-time>.omd.tar` (about 1.7 GB,
   about 35 s). Restore from this, not from the live `checkmk_checkmk-sites` volume copy.
 - Flushes Valkey/Redis persistence for `searxng-valkey`; SQLite-safe backup of `portracker.db`.
 - Does not dump `mariadb-kodi`; that database has its own Borg job, [`KodiDB/borg-prep-kodidb.sh`](../KodiDB/borg-prep-kodidb.sh).
@@ -407,7 +407,7 @@ output lands next to the scripts.
 
 - `REPORT.md` — what was found, what Borg should back up, consistency caveats, suggested excludes
 - `raw/` — raw inventory data backing the report
-- `borg-prep-appdata-<name>.sh` — generated prep script following the same staged/atomic-publish pattern as the existing per-host scripts, with DB-safe dumps (pg_dumpall, mysqldump, mongodump, SQLite `.backup`, k3s etcd-snapshot, Checkmk `omd backup`) for everything detected. The Checkmk archive (`databases/<container>-<site>.omd.tar`) is written uncompressed so Borg can deduplicate it, and only renamed into place when `omd backup` succeeds. It prints the same progress lines and summary table as the optiplex-three script and saves the table as `metadata/prep-summary.txt`, plus a copy of itself and the deploy script's rollback copies. Home directories are copied without `~/.cache`, `borg-survey-*` folders and anything mounted inside them (`--one-file-system`). Nothing is copied twice: app dirs and compose projects inside a copied home are skipped, and so is a home inside a copied app dir or another home. A home or app dir of 10G or more, or whose size the survey couldn't measure in 20 seconds, is generated commented out (`SKIP` in the summary) so you decide whether to enable it
+- `borg-prep-appdata-<name>.sh` — generated prep script following the same staged/atomic-publish pattern as the existing per-host scripts, with DB-safe dumps (pg_dumpall, mysqldump, mongodump, SQLite `.backup`, k3s etcd-snapshot, Checkmk `omd backup`) for everything detected. The Checkmk archive (`databases/<container>-<site>-<version>-<YYYYmmdd-HHMMSS>.omd.tar`, version from `omd version`) is written uncompressed so Borg can deduplicate it, and only renamed into place when `omd backup` succeeds. It prints the same progress lines and summary table as the optiplex-three script and saves the table as `metadata/prep-summary.txt`, plus a copy of itself and the deploy script's rollback copies. Home directories are copied without `~/.cache`, `borg-survey-*` folders and anything mounted inside them (`--one-file-system`). Nothing is copied twice: app dirs and compose projects inside a copied home are skipped, and so is a home inside a copied app dir or another home. A home or app dir of 10G or more, or whose size the survey couldn't measure in 20 seconds, is generated commented out (`SKIP` in the summary) so you decide whether to enable it
 - `BORG_UI-<name>-prep-appdata.sh` — generated Borg UI script-entity wrapper (SSH trigger)
 - `deploy-borg-prep-<name>.sh` — installs the prep script to `/usr/local/sbin`: backs up the old version, shows a diff, refuses the wrapper/CRLF/wrong host; `--test`, `--rollback`, `--list`, `--backup-only`
 
