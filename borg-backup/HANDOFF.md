@@ -26,7 +26,7 @@ that are versioned in this repo, deployed safely, and restorable without Borg UI
   | Job | Host | Repo script | Notes |
   |---|---|---|---|
   | `borg-prep-appdata-smiddleware.sh` | smiddleware | `borg-backup/` | pre-2.0.0, hand-written |
-  | `borg-prep-appdata-optiplex-two.sh` | optiplex-two | `borg-backup/` | pre-2.0.0, survey 2026-08-01 |
+  | `borg-prep-appdata-optiplex-two.sh` | optiplex-two | `borg-backup/` | **3.0.0**, survey 2026-10-19, matches deployed |
   | `borg-prep-appdata-optiplex-three.sh` | optiplex-three (k3s worker) | `borg-backup/` | **2.0.0**, matches deployed |
   | `borg-prep-kodidb.sh` | optiplex-two (`mariadb-kodi`) | [`KodiDB/`](../KodiDB/) | own Borg job |
   | `borg-prep-matomo.sh` | `$MATOMO_DOCKER_HOST` | [`Matomo/`](../Matomo/) | own Borg job |
@@ -66,17 +66,31 @@ and mounting `SYSBAK_borgrepos_<host>` would give each host write access to its 
 
 Tested locally (Windows Git Bash, fake survey state): generated scripts pass `bash -n`; Checkmk
 block generated, unsafe site name refused; deploy install → backup → prune → `--backup-only` →
-`--rollback` → identical-file and CRLF checks all behave. **Not yet run on a real host.**
+`--rollback` → identical-file and CRLF checks all behave. Then run for real on optiplex-two
+(below): pull, survey, deploy `--test` all worked.
 
 ## Branches
 | Branch | State | Action |
 |---|---|---|
-| `borg-local-script-backups` | 3.0.0, pushed for host testing | test on optiplex-two, then PR to `main` |
+| `borg-local-script-backups` | 3.0.0, tested and deployed on optiplex-two | PR to `main` |
 | `borg-optiplex-two-cleanup` | merged into `borg-local-script-backups` | delete after the PR merges |
 | `borg-checkmk-omd-backup` | superseded by survey Checkmk detection | delete |
 | `borg-prep-summary-and-deploy`, `borg-survey-generator-summary` | already in `main` | delete |
 
-## Confirmed on optiplex-two (2026-10-19, after a survey run + manual backup)
+## optiplex-two on 3.0.0 (deployed 2026-10-19 23:35 from the branch)
+- Fresh survey 3.0.0 in `~/scripts/borgbackup/borg-survey-optiplex-two-20261019-233036/`; the
+  `mariadb-kodi` dump block was removed by hand (KodiDB has its own job). Old 2026-08-01 script
+  saved in `/var/backups/borg-script-backups/optiplex-two/20261019-233536/`.
+- `--test` run: 38 s total. Checkmk `omd backup --no-compression` OK, 1.7 GB in 34 s. Prep script +
+  rollback copies OK. Only warning: named volumes (plan already reads `/var/lib/docker/volumes`);
+  marker `/etc/borg-backup/docker-volumes-in-plan` set afterwards.
+- The checked-in `borg-prep-appdata-optiplex-two.sh` is the deployed file (survey copy confirmed
+  identical with `cmp`). Regenerating brings back the `mariadb-kodi` dump block - delete it again.
+- Snapshot ~1.8 GB on `/` (58 GB free). Also covers `/home/openclaw` and `/opt/multi-gmail/tokens`
+  (OAuth tokens - secret; repo is encrypted).
+- Cosmetic: summary labels longer than 36 chars push the Status column out of line.
+
+## Before 3.0.0 on optiplex-two (2026-10-19, after a survey run + manual backup)
 - Installed prep script is still the **2026-08-01 (pre-2.0.0)** one: the survey run did not deploy.
   The survey copy on the host (`~/scripts/borg-backup-survey.sh`, Jul 15) predates 2.0.0, so it
   never offered to deploy; there is also no `/mnt/backups` on the host.
@@ -112,21 +126,13 @@ Confirm each before acting on it.
 6. **Last good archive per repo** — check Borg UI, or `borg list --last 1` against each repo.
 
 ## Next steps
-1. **optiplex-two, from the branch:** pull with `--branch borg-local-script-backups --dest
-   ~/scripts/borgbackup`, run a **fresh** survey there (not `--from`: the July state lacks
-   home/named-volume data), answer **N** at the deploy offer, review/edit the generated prep script,
-   check free space (`df -h /var/backups` vs `docker exec checkmk du -sh /omd/sites/cmk`; the
-   uncompressed omd archive needs ~2× the site size while `latest/` is rebuilt), then deploy with
-   `--test`. Check in the test output:
-   - `Checkmk backup (checkmk, site cmk)` is `OK`. If `omd backup` rejects `--no-compression`,
-     drop the flag and name the file `.omd.tar.gz` in the survey generator.
-   - The prep run's total time. The Borg UI pre-backup time-out is 300 s; raise it if the run gets close.
-   - No `/data/compose/14` in the script (no statping container exists any more).
-   - The survey will generate a `mysqldump` of `mariadb-kodi`. KodiDB already has its own Borg
-     job, so delete that block (or keep it and drop the KodiDB job; don't run both).
-2. Copy the generated optiplex-two prep script into the repo, commit on the branch.
-3. In Borg UI: remove `/data/compose/14` from the optiplex-two plan; fix the live KodiDB entity if
-   open item 2 says so; set the named-volume marker on optiplex-two (plan already reads the volumes).
+1. ~~optiplex-two: fresh 3.0.0 survey, remove `mariadb-kodi` block, deploy with `--test`~~ — done
+   2026-10-19 (see above). Named-volume marker set. Deployed script committed (identical, `cmp`).
+2. ~~Commit the optiplex-two prep script~~ — done.
+3. In Borg UI: remove `/data/compose/14` from the optiplex-two plan, run it, and confirm the archive
+   has `databases/checkmk-cmk.omd.tar`, no `statup` paths, 0 pre-backup warnings. Note the
+   deduplicated size of the first two runs (how well Borg dedups the 1.7 GB omd tar). Fix the live
+   KodiDB entity if open item 2 says so. Clean up the old survey folders in `~/scripts`.
 4. Merge the branch to `main` (PR); then optiplex-three: pull from `main`, deploy the 3.0.0 prep
    script with `--test`. Its 2.x share backups stay where they are.
 5. Regenerate smiddleware with survey 3.0.0, review, deploy, commit. Resolve open item 1 there.
