@@ -50,16 +50,6 @@ docker network ls > "$TMP/docker/docker-networks.txt" 2>/dev/null || true
 docker inspect $(docker ps -aq) > "$TMP/docker/docker-inspect-all.json" 2>/dev/null || true
 
 # -----------------------------
-# Compose project: statping
-# -----------------------------
-if [ -d /data/compose/14 ]; then
-  rsync -a --delete \
-    --exclude='*.db-wal' \
-    --exclude='*.db-shm' \
-    /data/compose/14/ "$TMP/apps/data-compose-14/"
-fi
-
-# -----------------------------
 # Compose project: portainer
 # -----------------------------
 if [ -d /opt/docker/compose/portainer ]; then
@@ -86,15 +76,6 @@ fi
 if docker ps --format '{{.Names}}' | grep -qx 'searxng-valkey'; then
   docker exec 'searxng-valkey' redis-cli BGSAVE >/dev/null 2>&1 || true
   sleep 2
-fi
-
-# -----------------------------
-# PostgreSQL dump: container postgres
-# -----------------------------
-if docker ps --format '{{.Names}}' | grep -qx 'postgres'; then
-  docker exec 'postgres' pg_dumpall -U 'statup' \
-    > "$TMP/databases/postgres-pg_dumpall.sql" 2>/dev/null \
-    || echo "WARN: pg_dumpall failed for postgres"
 fi
 
 # SQLite-safe backup of /volume1/docker/portracker/portracker.db
