@@ -127,7 +127,9 @@ Confirm each before acting on it.
 
 ## Next steps
 1. ~~optiplex-two: fresh 3.0.0 survey, remove `mariadb-kodi` block, deploy with `--test`~~ — done
-   2026-10-19 (see above). Named-volume marker set. Deployed script committed (identical, `cmp`). Then the Checkmk archive name gained version + date-time: **redeploy on optiplex-two** (pull + `deploy --test`).
+   2026-10-19 (see above). Named-volume marker set. Deployed script committed (identical, `cmp`). Then the Checkmk archive name gained version + date-time (redeployed, below).
+   Redeployed 2026-10-20 00:00 (commit 7384f01, sha256 `c86c602f…`): 0 warnings, 30 s, archive
+   `checkmk-cmk-2.5.0p16.community-20261020-000029.omd.tar` (1.8 GB). Checkmk is 2.5.0p16 (≥ p9 ✓).
 2. ~~Commit the optiplex-two prep script~~ — done.
 3. In Borg UI: remove `/data/compose/14` from the optiplex-two plan, run it, and confirm the archive
    has `databases/checkmk-cmk-<version>-<date-time>.omd.tar`, no `statup` paths, 0 pre-backup warnings. Note the
