@@ -122,6 +122,28 @@ change). Check it before deleting.
 - Expected recurring warning: `FileChangedWarning` on the live `checkmk_checkmk-sites` volume
   (`var/check_mk/last_job_runs.mk`). Harmless; the `omd backup` archive is the consistent copy.
 
+## Borg UI email notifications (set up 2026-10-20)
+Borg UI sends through Apprise, from `ktntom.utility@gmail.com` (Gmail app password) to
+`tasmith2@gmail.com`. Working URL, entered in Borg UI → Notifications:
+```
+mailto://ktntom.utility:<app-password>@gmail.com?to=tasmith2@gmail.com&format=text
+```
+- Use the short form with host `gmail.com`. Apprise only applies its Gmail settings
+  (`smtp.gmail.com:587`, STARTTLS, login as the full address) when the host is `gmail.com`.
+  `mailtos://ktntom.utility@gmail.com:<pw>@smtp.gmail.com/?to=...` failed: the extra `@` in the
+  user part and the `smtp.gmail.com` host mean Apprise falls back to its generic email settings.
+- `&format=text`: Apprise sends Gmail as HTML by default, so the plain-text backup report arrived
+  as one run-on paragraph. Plain text keeps the line breaks. Not yet confirmed on a real report.
+- Report timestamps are raw UTC ISO (`2026-10-20T07:04:23.369860+00:00`). That comes from Borg
+  UI's report template; container `TZ` doesn't change it.
+- Test outside the UI (prints the SMTP error):
+  ```bash
+  docker exec -it borg-backup python3 -c "
+  import apprise, logging, sys
+  logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+  a = apprise.Apprise(); print(a.add('<url>')); print(a.notify(title='Borg UI test', body='test'))"
+  ```
+
 ## Open items — status unknown
 Confirm each before acting on it.
 
@@ -168,6 +190,9 @@ Confirm each before acting on it.
   script against the hand-written one (AdGuard, Traefik, Dashy volume, portracker), deploy with
   `--test`, send the script to be committed. Resolve open item 1 there (named volumes in the plan,
   then set the marker).
+- [ ] **4. Borg UI notifications: rotate the Gmail app password.** The 2026-10-20 one was pasted
+  into a Claude chat. Revoke it in the `ktntom.utility` Google account, create a new one, update
+  the Borg UI URL. Then confirm the next backup report arrives line by line (`format=text`).
 
 ## Later
 - Fix the live KodiDB Borg UI entity if open item 2 says it still points at `192.168.1.20`.
