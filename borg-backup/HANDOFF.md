@@ -130,6 +130,15 @@ Confirm each before acting on it.
    2026-10-19 (see above). Named-volume marker set. Deployed script committed (identical, `cmp`). Then the Checkmk archive name gained version + date-time (redeployed, below).
    Redeployed 2026-10-20 00:00 (commit 7384f01, sha256 `c86c602f…`): 0 warnings, 30 s, archive
    `checkmk-cmk-2.5.0p16.community-20261020-000029.omd.tar` (1.8 GB). Checkmk is 2.5.0p16 (≥ p9 ✓).
+   Borg UI run 2026-10-20 00:04 (plan exclude `/data/compose/14` added, old
+   `sh:data/compose/14/statup/postgres` removed): pre-backup green 22 s; archive has
+   `databases/checkmk-cmk-2.5.0p16.community-20261020-000411.omd.tar`; no statping paths; prune,
+   compact, check OK. The omd tar added only ~112 MB of new deduplicated data (chunks shared with
+   the live volume already in the repo). Backup step still "Warnings": `FileChangedWarning` on the
+   live `checkmk_checkmk-sites` volume (`rrdcached/rrd.journal.*`, `log/apache/stats`).
+   **Recommended:** exclude `/var/lib/docker/volumes/checkmk_checkmk-sites` from the plan (the
+   omd archive is the restore source); fallback option: exclude only `.../_data/cmk/var/rrdcached/**`
+   and `.../_data/cmk/var/log/**`. Check the second run's deduplicated size for the steady state.
 2. ~~Commit the optiplex-two prep script~~ — done.
 3. In Borg UI: remove `/data/compose/14` from the optiplex-two plan, run it, and confirm the archive
    has `databases/checkmk-cmk-<version>-<date-time>.omd.tar`, no `statup` paths, 0 pre-backup warnings. Note the
