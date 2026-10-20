@@ -51,7 +51,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for detail. (3.0.0 changes the backup locatio
   until `/etc/borg-backup/docker-volumes-in-plan` exists.
 - optiplex-three prep script regenerated from the 2026-10-11 survey (adds portracker) and deployed.
 
-## 3.0.0 — branch `borg-local-script-backups`, PR #28 (ready to merge: CI green, no conflicts)
+## 3.0.0 — merged to `main` 2026-10-20 (PR #28)
 Decided 2026-10-19: hosts do **not** mount a backup share. optiplex-two has no `/mnt/backups`,
 and mounting `SYSBAK_borgrepos_<host>` would give each host write access to its own Borg repo.
 - Deploy rollback copies → `/var/backups/borg-script-backups/<host>/<ts>/` on the host (last 10).
@@ -62,7 +62,7 @@ and mounting `SYSBAK_borgrepos_<host>` would give each host write access to its 
   `databases/checkmk-<site>-<version>-<date-time>.omd.tar`. Supersedes the `borg-checkmk-omd-backup` branch.
 - Home copies exclude `borg-survey-*/`.
 - Deploy scripts for all three hosts are checked in, so the pull works everywhere.
-- `borg-optiplex-two-cleanup` (KodiDB wrapper IP fix, statping removal) is merged into this branch.
+- `borg-optiplex-two-cleanup` (KodiDB wrapper IP fix, statping removal) was merged in with it.
 
 Tested locally (Windows Git Bash, fake survey state): generated scripts pass `bash -n`; Checkmk
 block generated, unsafe site name refused; deploy install → backup → prune → `--backup-only` →
@@ -70,12 +70,17 @@ block generated, unsafe site name refused; deploy install → backup → prune �
 (below): pull, survey, deploy `--test` all worked.
 
 ## Branches
-| Branch | State | Action |
-|---|---|---|
-| `borg-local-script-backups` | 3.0.0, tested and deployed on optiplex-two | merge PR #28, then delete |
-| `borg-optiplex-two-cleanup` | merged into `borg-local-script-backups` | delete after the PR merges |
-| `borg-checkmk-omd-backup` | superseded by survey Checkmk detection | delete |
-| `borg-prep-summary-and-deploy`, `borg-survey-generator-summary` | already in `main` | delete |
+Cleaned up 2026-10-20. All borg work is in `main`; no borg branches are open.
+
+| Branch | Outcome |
+|---|---|
+| `borg-local-script-backups` | merged as PR #28, deleted |
+| `borg-optiplex-two-cleanup` | merged via PR #28, deleted |
+| `borg-checkmk-omd-backup` | PR #22 closed (superseded by the survey's Checkmk detection), deleted |
+| `borg-prep-summary-and-deploy`, `borg-survey-generator-summary`, `borg-dev` | already in `main`, deleted |
+
+Not reviewed yet: `Dev-Docker` (July, 9 commits not in `main`, includes a Borg UI setup-sheet
+change). Check it before deleting.
 
 ## optiplex-two on 3.0.0 (deployed 2026-10-19 23:35 from the branch)
 - Fresh survey 3.0.0 in `~/scripts/borgbackup/borg-survey-optiplex-two-20261019-233036/`; the
@@ -138,7 +143,6 @@ Confirm each before acting on it.
 6. **Last good archive per repo** — check Borg UI, or `borg list --last 1` against each repo.
 
 ## TODO
-First merge PR #28 into `main` (ready: CI green, no conflicts). Then:
 
 - [ ] **1. optiplex-two: stop the live Checkmk volume warnings.** In the Borg UI plan, add the exclude
   `/var/lib/docker/volumes/checkmk_checkmk-sites` (recommended: the `omd backup` archive is the
@@ -173,8 +177,8 @@ First merge PR #28 into `main` (ready: CI green, no conflicts). Then:
   CRIT if the last good archive is > 26 h old. DSM can't see Borg client failures.
 - Do one real restore drill into `/restore` (e.g. portracker SQLite or the Checkmk omd archive)
   and record the result here.
-- Housekeeping: delete the branches listed above; fill or remove the README screenshot
-  placeholders; optional summary-table column width fix (survey change).
+- Housekeeping: fill or remove the README screenshot placeholders; optional summary-table column
+  width fix (survey change); review `Dev-Docker` (see Branches).
 
 ## Related
 - [`checkmk/HANDOFF-POC.md`](../checkmk/HANDOFF-POC.md) — steps 11 (backup-age check) and 13 (`checkmk-sites` in Borg).
