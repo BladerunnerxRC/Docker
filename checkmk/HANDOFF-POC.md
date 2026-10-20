@@ -82,5 +82,25 @@ Source of truth: [`docker_compose.yml`](docker_compose.yml) in this folder.
    - SNMP probe 2026-10-18: all three NASes run DSM 7.4 and return the full Disk/RAID/SMART tables (incl. diskHealthStatus `.2.1.1.13`). Community fixed to match on all three.
    - UPS: APC Back-UPS NS 675M1 on USB to the DS920+; the other NASes are DSM network-UPS clients (no UPS OIDs of their own). The Synology UPS MIB (`.4`) answers on the DS920+ only; RFC1628 UPS-MIB is absent. At discovery, check whether any built-in service picks it up. If none does, a small custom SNMP check is a candidate (alert on on-battery, charge <50%, runtime <5 min, battery age >4 y; graph runtime). Battery is original (mfr 2020-10-30) and was never self-tested as of 2026-10-18; replacement recommended.
    - Router (SRM) gets only the Port MIB (`.109`) beyond standard MIBs — nothing new there.
-10. Kubernetes monitoring via Checkmk Kubernetes special agent + cluster collector.
-11. Add `checkmk-sites` volume to Borg backup set.
+   - Also worth adding (no custom code): HTTPS cert-expiry check on each DSM web UI; TCP checks for SMB 445 / NFS 2049.
+10. Loft switch (TP-Link TL-SG205E "Easy Smart", identified 2026-10-19; IP and uplink in local file): **no SNMP** on this model. Monitor with ping plus an HTTP check on its web UI (expect 200), and keep the interface service for its uplink port on the T2600G (status, speed, errors). The T2600G's LLDP-MIB over SNMP shows neighbors, which is how the uplink was found.
+11. Borg backup-age local check on each Borg source host (alert if the last good archive is >26 h old). This is the main monitoring gap: DSM can't see Borg client failures.
+12. Kubernetes monitoring via Checkmk Kubernetes special agent + cluster collector.
+13. Add `checkmk-sites` volume to Borg backup set.
+
+## Manual site backup / restore
+Quick, no downtime. Run on optiplex-two:
+```bash
+TS=$(date +%Y%m%d-%H%M)
+docker exec checkmk omd version cmk                                   # record it: restore needs the same version (image tag 2.5.0-latest floats)
+docker exec checkmk omd backup --no-past cmk /tmp/cmk-$TS.tar.gz      # --no-past = config only, no graph/log history; drop it for a full backup
+docker cp checkmk:/tmp/cmk-$TS.tar.gz ~/ && docker exec checkmk rm /tmp/cmk-$TS.tar.gz
+ls -lh ~/cmk-$TS.tar.gz                                               # then copy it off the host (e.g. to the NAS)
+```
+Restore (same Checkmk version):
+```bash
+docker cp ~/cmk-<TS>.tar.gz checkmk:/tmp/
+docker exec checkmk omd stop cmk
+docker exec checkmk omd restore --reuse /tmp/cmk-<TS>.tar.gz
+docker exec checkmk omd start cmk
+```
