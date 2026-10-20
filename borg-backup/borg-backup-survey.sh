@@ -62,7 +62,7 @@
 set -Eeuo pipefail
 
 # Keep in step with borg-backup/VERSION and CHANGELOG.md.
-SURVEY_VERSION="2.0.0"
+SURVEY_VERSION="3.0.0"
 
 # ---------------------------------------------------------------------------
 # Arguments and defaults
@@ -177,7 +177,7 @@ dir_size() {
 DOCKER_PRESENT=0
 declare -A COMPOSE_PROJECTS=()   # project name -> working dir
 declare -a APP_DIRS=()           # host dirs worth rsync-ing into the snapshot
-declare -a DB_CONTAINERS=()      # "container|kind|detail" (kind: postgres/mysql/mariadb/mongo/redis/influxdb/other)
+declare -a DB_CONTAINERS=()      # "container|kind|detail" (kind: checkmk/postgres/mysql/mariadb/mongo/redis/influxdb/other)
 declare -a STANDALONE_CONTAINERS=() # "container|image|status|ports" for containers with no Compose project label
 declare -a SQLITE_FILES=()       # host paths of SQLite DB files found in bind mounts
 declare -a NATIVE_SERVICES=()    # "service|kind|paths" for non-Docker apps
@@ -191,7 +191,11 @@ DOCKER_VOLUMES_DIR="/var/lib/docker/volumes"   # <docker data-root>/volumes, fro
 # Created by the operator once the host's Borg plan reads DOCKER_VOLUMES_DIR. Outside the prep
 # script on purpose, so deploying or regenerating the script never resets it.
 DOCKER_VOLUMES_ACK="/etc/borg-backup/docker-volumes-in-plan"
-declare -a HOME_DIRS=()          # home dirs of login users (UID 1000+ under /home)
+# Local folder where deploy-borg-prep-<name>.sh keeps rollback copies (<base>/<name>/<date-time>/).
+# The prep script copies it into each snapshot, so Borg carries it off the host.
+SCRIPT_BACKUP_BASE="/var/backups/borg-script-backups"
+KEEP_SCRIPT_BACKUPS=10
+declare -a HOME_DIRS=()         # home dirs of login users (UID 1000+ under /home)
 declare -A HOME_SIZE=()          # home dir -> du -sh size, measured once (not saved in state)
 declare -A DIR_SEEN=()           # dedup for APP_DIRS
 
@@ -384,6 +388,7 @@ collect_docker() {
   while IFS='|' read -r cname image; do
     kind="" detail=""
     case "$image" in
+      *check-mk*|*checkmk*)                        kind="checkmk" ;;
       *pgvector*|*timescale*|*postgres*|*postgis*) kind="postgres" ;;
       *mysql*)                                     kind="mysql" ;;
       *mariadb*)                                   kind="mariadb" ;;
@@ -398,6 +403,7 @@ collect_docker() {
     if [ -n "$kind" ]; then
       env="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$cname" 2>/dev/null || true)"
       case "$kind" in
+        checkmk)  detail="site=$(echo "$env" | sed -n 's/^CMK_SITE_ID=//p' | head -n1)"; [ "$detail" = "site=" ] && detail="site=cmk" ;;
         postgres) detail="user=$(echo "$env" | sed -n 's/^POSTGRES_USER=//p' | head -n1)"; [ "$detail" = "user=" ] && detail="user=postgres" ;;
         mysql|mariadb)
           if echo "$env" | grep -q '^MYSQL_ROOT_PASSWORD\|^MARIADB_ROOT_PASSWORD'; then detail="root password in container env"; else detail="root password NOT found in env - dump needs credentials"; fi ;;
@@ -669,7 +675,7 @@ write_report() {
         if is_large "$hsize"; then
           echo "- \`${hd}\` ($(large_note "$hsize")) - generated commented out; consider having Borg read it directly"
         else
-          echo "- \`${hd}\` (${hsize}) - copied into the snapshot, except \`~/.cache\` and anything mounted inside it"
+          echo "- \`${hd}\` (${hsize}) - copied into the snapshot, except \`~/.cache\`, \`borg-survey-*\` folders and anything mounted inside it"
         fi
       done
     else
@@ -816,7 +822,8 @@ generate_prep_script() {
 # Borg to pick up. Run as root; backup data is protected with strict permissions (umask 077).
 #
 # Output: timestamped progress lines on stdout, warnings on stderr, and a summary table
-# at the end. The summary is also saved in the snapshot as metadata/prep-summary.txt.
+# at the end. The summary is also saved in the snapshot as metadata/prep-summary.txt, next to
+# a copy of this script (metadata/prep-script.sh) and its rollback copies (metadata/script-backups/).
 #
 # Usage:
 #   sudo ./borg-prep-appdata-${NAME}.sh
@@ -838,6 +845,10 @@ LATEST="\${BASE}/latest"
 #   sudo mkdir -p /etc/borg-backup && sudo touch ${DOCKER_VOLUMES_ACK}
 # It lives outside this script, so deploying or regenerating the script never resets it.
 DOCKER_VOLUMES_ACK="${DOCKER_VOLUMES_ACK}"
+
+# Rollback copies kept by deploy-borg-prep-${NAME}.sh. Each run copies them, and this script
+# itself, into metadata/ of the snapshot.
+SCRIPT_BACKUPS="${SCRIPT_BACKUP_BASE}/${NAME}"
 
 mkdir -p "\$BASE"
 TMP="\$(mktemp -d "\${BASE}/.tmp.XXXXXX")"
@@ -1009,8 +1020,9 @@ EOF
   fi
 
   # --- Home directories ---
-  # Only ~/.cache is excluded (/.cache/ is anchored to the home), and --one-file-system keeps
-  # NAS shares or other mounts under the home out of the snapshot.
+  # Only ~/.cache is excluded (/.cache/ is anchored to the home), plus survey output folders
+  # anywhere in the home (their raw/ can hold container environment variables), and
+  # --one-file-system keeps NAS shares or other mounts under the home out of the snapshot.
   local hslug hsize
   for h in "${HOME_DIRS[@]}"; do
     hslug="$(slugify "$h")"
@@ -1029,7 +1041,7 @@ EOF
 # -----------------------------
 section_start "Home directory (${h})" "apps/${hslug}"
 section_skip "$(large_note "$hsize"), disabled in this script"
-# copy_tree ${h}/ "\$TMP/apps/${hslug}/" --one-file-system --exclude='/.cache/' --exclude='*.db-wal' --exclude='*.db-shm'
+# copy_tree ${h}/ "\$TMP/apps/${hslug}/" --one-file-system --exclude='/.cache/' --exclude='borg-survey-*/' --exclude='*.db-wal' --exclude='*.db-shm'
 section_end
 EOF
     else
@@ -1040,7 +1052,7 @@ EOF
 # -----------------------------
 section_start "Home directory (${h})" "apps/${hslug}"
 if [ -d ${h} ]; then
-  copy_tree ${h}/ "\$TMP/apps/${hslug}/" --one-file-system --exclude='/.cache/' --exclude='*.db-wal' --exclude='*.db-shm'
+  copy_tree ${h}/ "\$TMP/apps/${hslug}/" --one-file-system --exclude='/.cache/' --exclude='borg-survey-*/' --exclude='*.db-wal' --exclude='*.db-shm'
 else
   section_skip "${h} not found"
 fi
@@ -1098,6 +1110,45 @@ EOF
     kind="$(echo "$e" | cut -d'|' -f2)"
     detail="$(echo "$e" | cut -d'|' -f3)"
     case "$kind" in
+      checkmk)
+        local site="${detail#site=}"
+        # The site name is written into the generated script; omd site names are [A-Za-z0-9_].
+        if ! [[ "$site" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]]; then
+          cat >> "$out" <<EOF
+
+# -----------------------------
+# Checkmk site backup: container ${cname} - site name not usable, no backup generated
+# -----------------------------
+section_start "Checkmk backup (${cname})" ""
+section_skip "site name from CMK_SITE_ID not recognised - add 'omd backup' by hand"
+section_end
+EOF
+          continue
+        fi
+        cat >> "$out" <<EOF
+
+# -----------------------------
+# Checkmk site backup: container ${cname}, site ${site}
+# The site's volume is also read by Borg, but live files (RRDs, journals) can be mid-write.
+# 'omd backup' writes a consistent archive of a running site; restore it with 'omd restore'.
+# Uncompressed, so Borg can deduplicate it between runs. Written to .partial and renamed on
+# success, so a failed run never leaves something that looks like a good backup.
+# -----------------------------
+section_start "Checkmk backup (${cname}, site ${site})" "databases/${cname}-${site}.omd.tar"
+if docker ps --format '{{.Names}}' | grep -qx '${cname}'; then
+  if docker exec '${cname}' omd backup --no-compression '${site}' - \\
+       > "\$TMP/databases/${cname}-${site}.omd.tar.partial"; then
+    mv "\$TMP/databases/${cname}-${site}.omd.tar.partial" "\$TMP/databases/${cname}-${site}.omd.tar"
+  else
+    rm -f "\$TMP/databases/${cname}-${site}.omd.tar.partial"
+    warn "omd backup failed for ${cname} (site ${site})"
+  fi
+else
+  section_skip "container ${cname} not running"
+fi
+section_end
+EOF
+        ;;
       postgres)
         local pguser="${detail#user=}"
         cat >> "$out" <<EOF
@@ -1408,6 +1459,22 @@ EOF
   cat >> "$out" <<'EOF'
 
 # -----------------------------
+# This script and its rollback copies, so every archive holds the script that made it
+# and its recent history. Kept off-host this way; no backup share is needed.
+# -----------------------------
+section_start "Prep script + rollback copies" "metadata/prep-script.sh metadata/script-backups"
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+if [ -n "$SELF" ] && [ -f "$SELF" ]; then
+  install -m 600 "$SELF" "$TMP/metadata/prep-script.sh" || warn "could not copy $SELF"
+else
+  warn "could not find this script's own file"
+fi
+if [ -d "$SCRIPT_BACKUPS" ]; then
+  copy_tree "$SCRIPT_BACKUPS/" "$TMP/metadata/script-backups/"
+fi
+section_end
+
+# -----------------------------
 # Summary (saved into the snapshot, then printed)
 # -----------------------------
 print_summary > "$TMP/metadata/prep-summary.txt"
@@ -1483,8 +1550,9 @@ generate_deploy_script() {
 # BORG_UI SSH wrapper, CRLF line endings, syntax errors, wrong host) and shows a diff against
 # what is installed now.
 #
-# Backups go to /mnt/backups/borg-script-backups/${NAME}/<YYYYmmdd-HHMMSS>/ on the Synology
-# share. If /mnt/backups is not mounted, nothing is installed or backed up.
+# Backups go to ${SCRIPT_BACKUP_BASE}/${NAME}/<YYYYmmdd-HHMMSS>/ on this host; the newest
+# ${KEEP_SCRIPT_BACKUPS} are kept. No share is needed: the prep script copies that folder into every snapshot,
+# so Borg carries it off the host.
 #
 # Usage (on ${NAME}):
 #   sudo ./deploy-borg-prep-${NAME}.sh [--yes] [--test] [SOURCE]
@@ -1507,11 +1575,13 @@ set -Eeuo pipefail
 
 EOF
   printf 'NAME=%q\n' "$NAME" >> "$out"
+  printf 'BACKUP_DIR=%q\n' "${SCRIPT_BACKUP_BASE}/${NAME}" >> "$out"
+  printf 'KEEP_BACKUPS=%q\n' "$KEEP_SCRIPT_BACKUPS" >> "$out"
   cat >> "$out" <<'EOF'
 TARGET="/usr/local/sbin/borg-prep-appdata-${NAME}.sh"
-BACKUP_MOUNT="/mnt/backups"
-BACKUP_DIR="${BACKUP_MOUNT}/borg-script-backups/${NAME}"
-KEEP_BACKUPS=10
+# Where 2.x deploy scripts kept backups (Synology share) and 1.x (local). --list shows them;
+# --rollback uses only BACKUP_DIR.
+LEGACY_DIRS=("/mnt/backups/borg-script-backups/${NAME}" "/var/backups/borg-prep-scripts")
 
 ACTION="install" ASSUME_YES=0 RUN_TEST=0 SRC=""
 while [ $# -gt 0 ]; do
@@ -1534,14 +1604,8 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 # Backup folders are named YYYYmmdd-HHMMSS, so a reverse name sort is newest first.
 list_backups() { ls -1d "$BACKUP_DIR"/*/"borg-prep-appdata-${NAME}.sh" 2>/dev/null | sort -r || true; }
 
-backup_mounted() {
-  ls "$BACKUP_MOUNT/" >/dev/null 2>&1 || true   # wakes an x-systemd.automount
-  mountpoint -q "$BACKUP_MOUNT"
-}
-
 require_backup_dir() {
-  backup_mounted || die "$BACKUP_MOUNT is not mounted - mount the Synology backup share first. Nothing was changed."
-  mkdir -p "$BACKUP_DIR" || die "cannot create $BACKUP_DIR - check the share's permissions. Nothing was changed."
+  install -d -m 700 "$BACKUP_DIR" || die "cannot create $BACKUP_DIR. Nothing was changed."
 }
 
 backup_current() {
@@ -1555,8 +1619,7 @@ backup_current() {
     sleep 1
     dir="$BACKUP_DIR/$(date +%Y%m%d-%H%M%S)"
   done
-  # NFS shares often squash root or use ACLs, so chmod/chown may be refused: keep both best-effort.
-  chmod 700 "$dir" 2>/dev/null || true
+  chmod 700 "$dir"
   cp --preserve=timestamps "$TARGET" "$dir/borg-prep-appdata-${NAME}.sh"
   echo "Backed up current script to $dir/"
   list_backups | tail -n +$((KEEP_BACKUPS + 1)) | while read -r old; do
@@ -1575,12 +1638,14 @@ fi
 if [ "$ACTION" = "list" ]; then
   echo "Installed: $TARGET"
   [ -f "$TARGET" ] && ls -l "$TARGET"
-  if backup_mounted; then
-    echo "Backups in $BACKUP_DIR (newest first):"
-    list_backups | sed 's/^/  /'
-  else
-    echo "Backups: $BACKUP_MOUNT is not mounted - cannot list them."
-  fi
+  echo "Backups in $BACKUP_DIR (newest first):"
+  list_backups | sed 's/^/  /'
+  # timeout: a 2.x share entry in fstab may be an automount whose NAS is unreachable.
+  for d in "${LEGACY_DIRS[@]}"; do
+    if timeout 10 test -d "$d"; then
+      echo "Older backups (not used by --rollback; copy one back by hand if needed): $d"
+    fi
+  done
   exit 0
 fi
 
@@ -1634,8 +1699,7 @@ else
   fi
   echo
 
-  # No install without the backup share, checked before asking so a confirmed install never
-  # fails at the backup step.
+  # Create the backup folder before asking, so a confirmed install never fails at the backup step.
   require_backup_dir
 
   if [ "$ASSUME_YES" -ne 1 ]; then

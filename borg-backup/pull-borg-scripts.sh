@@ -1,44 +1,40 @@
 #!/usr/bin/env bash
 # pull-borg-scripts.sh
 #
-# Downloads this host's Borg scripts from GitHub into a local scripts folder and keeps a dated
-# copy of each download on the Synology share. It installs nothing: deploy the prep script
-# afterwards with deploy-borg-prep-<host>.sh, which shows a diff and asks first.
+# Downloads this host's Borg scripts from GitHub into a local scripts folder. It installs
+# nothing: deploy the prep script afterwards with deploy-borg-prep-<host>.sh, which shows a
+# diff and asks first.
 #
 # Files pulled (from borg-backup/ in BladerunnerxRC/Docker):
 #   borg-prep-appdata-<host>.sh  deploy-borg-prep-<host>.sh  borg-backup-survey.sh  README.md
 #   pull-borg-scripts.sh (this script, so it updates itself)
 #   VERSION  CHANGELOG.md (skipped on branches that don't have them yet)
 #
-# Usage (on the host, as root so it can write to /mnt/backups):
-#   sudo ./pull-borg-scripts.sh [--name HOST] [--branch BRANCH] [--dest DIR]
+# Usage (on the host; sudo is not needed):
+#   ./pull-borg-scripts.sh [--name HOST] [--branch BRANCH] [--dest DIR]
 #     --name     host whose scripts to pull (default: this host's short name)
 #     --branch   GitHub branch (default: main)
-#     --dest     local folder (default: /home/thomas/borg-backup-scripts for main,
-#                /home/thomas/borg-backup-scripts-<branch> for any other branch, so testing
+#     --dest     local folder (default: /home/thomas/scripts/borgbackup for main,
+#                /home/thomas/scripts/borgbackup-<branch> for any other branch, so testing
 #                a branch never overwrites the files you use)
 #     --version  show the version
 #
-# Local files are owned by the owner of the --dest folder (not root): scripts 750, others 640.
-# Copies go to /mnt/backups/borg-script-backups/<host>/github-pulls/<YYYYmmdd-HHMMSS>/ with a
-# SOURCE.txt naming the commit; the newest 10 are kept. They sit one level below the deploy
-# script's own backups, so its --rollback never picks them up.
-# If /mnt/backups is not mounted, or any download fails a check, nothing is changed.
+# Scripts are written 750, other files 640. Under sudo they are owned by the owner of the
+# --dest folder, not root. SOURCE.txt in the folder records the branch and commit pulled.
+# If any download fails a check, nothing is changed.
 #
 # Licensed under the MIT License. Provided "as is" without warranty.
 
 set -Eeuo pipefail
 
 # Keep in step with borg-backup/VERSION and CHANGELOG.md.
-PULL_VERSION="2.0.0"
+PULL_VERSION="3.0.0"
 
 REPO="BladerunnerxRC/Docker"
 NAME=""
 BRANCH="main"
 DEST=""
-DEST_BASE="/home/thomas/borg-backup-scripts"
-BACKUP_MOUNT="/mnt/backups"
-KEEP_PULLS=10
+DEST_BASE="/home/thomas/scripts/borgbackup"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -55,7 +51,6 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 [ -n "$NAME" ] || NAME="$(hostname -s)"
 
-[ "$(id -u)" -eq 0 ] || die "run as root (sudo $0 ...) - writing to $BACKUP_MOUNT needs it"
 [[ "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "'$NAME' is not a valid short hostname"
 [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || die "'$BRANCH' is not a valid branch name"
 command -v curl >/dev/null || die "curl is not installed (sudo apt install curl)"
@@ -67,7 +62,6 @@ fi
 FILES=("borg-prep-appdata-${NAME}.sh" "deploy-borg-prep-${NAME}.sh" "borg-backup-survey.sh" "README.md"
        "pull-borg-scripts.sh")
 OPTIONAL_FILES=("VERSION" "CHANGELOG.md")   # added in 2.0.0; older branches don't have them
-PULL_DIR="${BACKUP_MOUNT}/borg-script-backups/${NAME}/github-pulls"
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
@@ -120,56 +114,31 @@ for f in "${FILES[@]}" "${OPTIONAL_FILES[@]}"; do
 done
 
 # -----------------------------
-# Checks that change nothing come first: the share must be mounted and the local folder's
-# parent must exist, so a failure leaves neither a share folder nor a local folder behind.
+# The local folder's parent must exist, checked before anything is written.
 # -----------------------------
-ls "$BACKUP_MOUNT/" >/dev/null 2>&1 || true   # wakes an x-systemd.automount
-mountpoint -q "$BACKUP_MOUNT" \
-  || die "$BACKUP_MOUNT is not mounted - mount the Synology backup share first. Nothing was changed."
 parent="$(dirname "$DEST")"
 [ -d "$DEST" ] || [ -d "$parent" ] || die "$parent does not exist - pass --dest DIR. Nothing was changed."
 
-# -----------------------------
-# Folders: the dated share folder first, then the local folder. If the local folder can't be
-# created, the empty share folder is removed again, so a failure leaves nothing behind.
-# -----------------------------
-mkdir -p "$PULL_DIR" || die "cannot create $PULL_DIR - check the share's permissions. Nothing was changed."
-
-# mkdir without -p is atomic: if another pull already took this second, wait for the next one.
-tries=0
-copy_dir="$PULL_DIR/$(date +%Y%m%d-%H%M%S)"
-until mkdir "$copy_dir" 2>/dev/null; do
-  [ -e "$copy_dir" ] && [ "$tries" -lt 5 ] || die "cannot create $copy_dir. Nothing was changed."
-  tries=$((tries + 1))
-  sleep 1
-  copy_dir="$PULL_DIR/$(date +%Y%m%d-%H%M%S)"
-done
-
-# A new local folder belongs to the owner of its parent (normally thomas), not to root.
-if [ ! -d "$DEST" ]; then
-  install -d -m 750 -o "$(stat -c %u "$parent")" -g "$(stat -c %g "$parent")" "$DEST" \
-    || { rmdir "$copy_dir" 2>/dev/null; die "cannot create $DEST. Nothing was changed."; }
+# Under sudo, files belong to the owner of the folder (normally thomas), not to root. A new
+# folder takes the owner of its parent.
+own=()
+if [ "$(id -u)" -eq 0 ]; then
+  [ -d "$DEST" ] || own=(-o "$(stat -c %u "$parent")" -g "$(stat -c %g "$parent")")
 fi
-uid="$(stat -c %u "$DEST")" gid="$(stat -c %g "$DEST")"
-
-# -----------------------------
-# Dated copy on the Synology share
-# -----------------------------
-# NFS shares often squash root or use ACLs, so chmod may be refused: keep it best-effort.
-chmod 700 "$copy_dir" 2>/dev/null || true
-for f in "${PULLED[@]}"; do cp "$STAGE/$f" "$copy_dir/$f"; done
-printf 'repo:    %s\nbranch:  %s\ncommit:  %s\npulled:  %s\nby:      %s on %s\ntool:    pull-borg-scripts.sh %s\n' \
-  "$REPO" "$BRANCH" "$COMMIT" "$(date -Is)" "${SUDO_USER:-root}" "$(hostname -s)" "$PULL_VERSION" \
-  > "$copy_dir/SOURCE.txt"
-echo "Saved a copy to $copy_dir/"
-
-# Folders are named YYYYmmdd-HHMMSS, so a reverse name sort is newest first.
-ls -1d "$PULL_DIR"/[0-9]*-[0-9]*/ 2>/dev/null | sort -r | tail -n +$((KEEP_PULLS + 1)) \
-  | while read -r old; do rm -rf -- "$old"; done
+if [ ! -d "$DEST" ]; then
+  install -d -m 750 "${own[@]}" "$DEST" || die "cannot create $DEST. Nothing was changed."
+fi
+own=()
+[ "$(id -u)" -ne 0 ] || own=(-o "$(stat -c %u "$DEST")" -g "$(stat -c %g "$DEST")")
 
 # -----------------------------
 # Update the local scripts folder
 # -----------------------------
+printf 'repo:    %s\nbranch:  %s\ncommit:  %s\npulled:  %s\nby:      %s on %s\ntool:    pull-borg-scripts.sh %s\n' \
+  "$REPO" "$BRANCH" "$COMMIT" "$(date -Is)" "${SUDO_USER:-$(id -un)}" "$(hostname -s)" "$PULL_VERSION" \
+  > "$STAGE/SOURCE.txt"
+PULLED+=("SOURCE.txt")
+
 echo "Updating $DEST:"
 for f in "${PULLED[@]}"; do
   if [ ! -f "$DEST/$f" ]; then status="new"
@@ -178,7 +147,7 @@ for f in "${PULLED[@]}"; do
   fi
   case "$f" in *.sh) mode=750 ;; *) mode=640 ;; esac
   # Write next to the target, then rename: a script that is running keeps its old copy.
-  install -m "$mode" -o "$uid" -g "$gid" "$STAGE/$f" "$DEST/.$f.new"
+  install -m "$mode" "${own[@]}" "$STAGE/$f" "$DEST/.$f.new"
   mv -f "$DEST/.$f.new" "$DEST/$f"
   printf '  %-40s %s\n' "$f" "$status"
 done

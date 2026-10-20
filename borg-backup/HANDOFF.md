@@ -38,7 +38,7 @@ that are versioned in this repo, deployed safely, and restorable without Borg UI
   `## [x.y.z]` CHANGELOG heading all agree. **A version bump must touch all four.**
 
 ## Completed (2.0.0, merged to `main` via PR #20, 2026-10-12)
-See [`CHANGELOG.md`](CHANGELOG.md) for detail.
+See [`CHANGELOG.md`](CHANGELOG.md) for detail. (3.0.0 changes the backup locations below.)
 - `deploy-borg-prep-<host>.sh`: safety checks (wrapper/CRLF/syntax/wrong host), diff, y/N, backup to
   `/mnt/backups/borg-script-backups/<host>/<ts>/` (last 10), `--test/--rollback/--list/--backup-only`.
   Prompted by the 2026-10-06 optiplex-three outage (wrapper copied over the prep script).
@@ -51,30 +51,37 @@ See [`CHANGELOG.md`](CHANGELOG.md) for detail.
   until `/etc/borg-backup/docker-volumes-in-plan` exists.
 - optiplex-three prep script regenerated from the 2026-10-11 survey (adds portracker) and deployed.
 
-## Unmerged branches
-| Branch | Commits | What it does | Merge into `main` |
-|---|---|---|---|
-| `borg-optiplex-two-cleanup` | 85a25e1, fd4d0bc | optiplex-two: drop dead statping `pg_dumpall` and `/data/compose/14` rsync; **fix KodiDB wrapper SSH target** (`192.168.1.20` placeholder → `192.168.200.14`); remove statping Dashy tile | clean |
-| `borg-checkmk-omd-backup` | 81cb2e3 | optiplex-two: hand-added `omd backup cmk -` → `databases/checkmk-cmk.omd.tar.gz` (consistent Checkmk site archive) | clean |
-| `borg-prep-summary-and-deploy`, `borg-survey-generator-summary` | none beyond `main` | already merged | delete |
+## In progress — 3.0.0 on branch `borg-local-script-backups` (not merged)
+Decided 2026-10-19: hosts do **not** mount a backup share. optiplex-two has no `/mnt/backups`,
+and mounting `SYSBAK_borgrepos_<host>` would give each host write access to its own Borg repo.
+- Deploy rollback copies → `/var/backups/borg-script-backups/<host>/<ts>/` on the host (last 10).
+- Prep scripts copy themselves + those rollback copies into `metadata/` of every snapshot, so Borg
+  carries them off-host with no plan change.
+- Pull script → `~/scripts/borgbackup` (branch: `~/scripts/borgbackup-<branch>`), no sudo, no share.
+- Survey detects Checkmk containers and generates `omd backup --no-compression <site> -` →
+  `databases/checkmk-<site>.omd.tar`. Supersedes the `borg-checkmk-omd-backup` branch.
+- Home copies exclude `borg-survey-*/`.
+- Deploy scripts for all three hosts are checked in, so the pull works everywhere.
+- `borg-optiplex-two-cleanup` (KodiDB wrapper IP fix, statping removal) is merged into this branch.
 
-> [!WARNING]
-> The two optiplex-two branches merge cleanly into `main` on their own but **conflict with each
-> other** (same region of `borg-prep-appdata-optiplex-two.sh` and README). Merge
-> `borg-optiplex-two-cleanup` first, then rebase `borg-checkmk-omd-backup` onto `main`.
->
-> Until the cleanup branch lands, `KodiDB/BORG_UI-kodidb-prep-dbdump.sh` on `main` still SSHes to
-> the placeholder `root@192.168.1.20`.
+Tested locally (Windows Git Bash, fake survey state): generated scripts pass `bash -n`; Checkmk
+block generated, unsafe site name refused; deploy install → backup → prune → `--backup-only` →
+`--rollback` → identical-file and CRLF checks all behave. **Not yet run on a real host.**
 
-## Known problem — pull script fails on optiplex-two and smiddleware
-`pull-borg-scripts.sh` treats `deploy-borg-prep-<host>.sh` as **required** (only `VERSION` and
-`CHANGELOG.md` are optional). Only optiplex-three's deploy script is checked in, so a pull on
-optiplex-two or smiddleware dies with "is not on branch main … Nothing was changed."
-Fixed by step 3 below (regenerate and commit those hosts' deploy scripts).
+## Branches
+| Branch | State | Action |
+|---|---|---|
+| `borg-local-script-backups` | 3.0.0, pushed for host testing | test on optiplex-two, then PR to `main` |
+| `borg-optiplex-two-cleanup` | merged into `borg-local-script-backups` | delete after the PR merges |
+| `borg-checkmk-omd-backup` | superseded by survey Checkmk detection | delete |
+| `borg-prep-summary-and-deploy`, `borg-survey-generator-summary` | already in `main` | delete |
 
 ## Confirmed on optiplex-two (2026-10-19, after a survey run + manual backup)
 - Installed prep script is still the **2026-08-01 (pre-2.0.0)** one: the survey run did not deploy.
-  No `/mnt/backups/borg-script-backups/optiplex-two/` exists, so the deploy script never ran there.
+  The survey copy on the host (`~/scripts/borg-backup-survey.sh`, Jul 15) predates 2.0.0, so it
+  never offered to deploy; there is also no `/mnt/backups` on the host.
+- `~/scripts/` holds six old survey folders (`root:root 755`, world-readable `raw/`). Delete them
+  or `chmod -R go-rwx` once the new survey is done.
 - It still rsyncs `/data/compose/14` (statping) and still has the dead `pg_dumpall`. No statping or
   postgres container exists; `/data/compose/14` is a leftover folder (May 24) copied every run.
   The Borg UI plan **also** backs up `/data/compose/14` directly, so it is archived twice.
@@ -105,26 +112,26 @@ Confirm each before acting on it.
 6. **Last good archive per repo** — check Borg UI, or `borg list --last 1` against each repo.
 
 ## Next steps
-1. Merge `borg-optiplex-two-cleanup` → `main`; deploy on optiplex-two; fix the live KodiDB entity if (2) says so.
-2. Rebase and merge `borg-checkmk-omd-backup`; deploy on optiplex-two; confirm
-   `databases/checkmk-cmk.omd.tar.gz` appears in the next archive and the summary has no `WARN` for it.
-3. Regenerate optiplex-two and smiddleware with survey 2.0.0 (`sudo ./borg-backup-survey.sh` on each
-   host), review the diff, commit the prep **and** `deploy-borg-prep-<host>.sh` scripts, deploy with
-   `--test`. This brings the named-volume warning and summary table to both hosts and fixes the pull.
-   > [!CAUTION]
-   > Regenerating optiplex-two **drops the hand-added `omd backup` block**. Either re-add it after
-   > regenerating, or teach the survey to detect a `checkmk` container and emit it (preferred:
-   > it then survives future regenerations).
-   > Review the 1.x → 2.0.0 diff: generated scripts warn and continue where 1.x aborted.
-4. Resolve open item 1 per host: add the volumes path to the plan, then touch the marker.
-5. Backup-age monitoring (Checkmk handoff step 11): Checkmk local check on each source host,
+1. **optiplex-two, from the branch:** pull into `~/scripts/borgbackup-borg-local-script-backups`,
+   run a **fresh** survey there (not `--from`: the July state lacks home/named-volume data), review
+   the generated prep script, deploy with `--test`. Check in the test output:
+   - `Checkmk backup (checkmk, site cmk)` is `OK`. If `omd backup` rejects `--no-compression`,
+     drop the flag and name the file `.omd.tar.gz` in the survey generator.
+   - The prep run's total time. The Borg UI pre-backup time-out is 300 s; raise it if the run gets close.
+   - No `/data/compose/14` in the script (no statping container exists any more).
+   - The survey will generate a `mysqldump` of `mariadb-kodi`. KodiDB already has its own Borg
+     job, so delete that block (or keep it and drop the KodiDB job; don't run both).
+2. Copy the generated optiplex-two prep script into the repo, commit on the branch.
+3. In Borg UI: remove `/data/compose/14` from the optiplex-two plan; fix the live KodiDB entity if
+   open item 2 says so; set the named-volume marker on optiplex-two (plan already reads the volumes).
+4. Merge the branch to `main` (PR); then optiplex-three: pull from `main`, deploy the 3.0.0 prep
+   script with `--test`. Its 2.x share backups stay where they are.
+5. Regenerate smiddleware with survey 3.0.0, review, deploy, commit. Resolve open item 1 there.
+6. Backup-age monitoring (Checkmk handoff step 11): Checkmk local check on each source host,
    CRIT if the last good archive is > 26 h old. DSM can't see Borg client failures.
-6. Do one real restore drill into `/restore` (e.g. portracker SQLite or the Checkmk omd archive)
+7. Do one real restore drill into `/restore` (e.g. portracker SQLite or the Checkmk omd archive)
    and record the result here.
-7. Housekeeping:
-   - Delete the merged branches listed above.
-   - CHANGELOG `[2.0.0]` link points at the `borg-dev` tree; repoint it to `main` or a tag.
-   - README "Expected output location (both hosts)" → three hosts; fill or remove the screenshot placeholders.
+8. Housekeeping: delete the branches listed above; fill or remove the README screenshot placeholders.
 
 ## Related
 - [`checkmk/HANDOFF-POC.md`](../checkmk/HANDOFF-POC.md) — steps 11 (backup-age check) and 13 (`checkmk-sites` in Borg).
