@@ -151,7 +151,7 @@ Topology result: `sw-t2600g → <docker node> → stack-<stack> → containers`.
 10. Loft switch (TP-Link TL-SG205E "Easy Smart", identified 2026-10-19; IP and uplink in local file): **no SNMP** on this model. Monitor with ping plus an HTTP check on its web UI (expect 200), and keep the interface service for its uplink port on the T2600G (status, speed, errors). The T2600G's LLDP-MIB over SNMP shows neighbors, which is how the uplink was found.
 11. Borg backup-age local check on each Borg source host (alert if the last good archive is >26 h old). This is the main monitoring gap: DSM can't see Borg client failures.
 12. Kubernetes monitoring via Checkmk Kubernetes special agent + cluster collector.
-13. Add `checkmk-sites` volume to Borg backup set.
+13. ~~Add `checkmk-sites` volume to Borg backup set~~ - done 2026-10-20 (borg-backup 3.0.0, PR #28). optiplex-two's Borg prep runs `omd backup --no-compression cmk` every night into `databases/checkmk-cmk-<version>-<date-time>.omd.tar` (consistent; restore with `omd restore` on the same Checkmk version). The raw volume is also in the plan via `/var/lib/docker/volumes`. Still to do: one restore test - see [`borg-backup/HANDOFF.md`](../borg-backup/HANDOFF.md).
 
 ## Manual site backup / restore
 Quick, no downtime. Run on optiplex-two:
