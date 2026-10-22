@@ -30,6 +30,7 @@ through a pre-backup hook.
 | 🚀 | [Deploying in Portainer](#deploying-in-portainer) | Getting the stack up |
 | 🧙 | [Installer Walkthrough](#installer-walkthrough) | The one-time web setup |
 | 🔧 | [Post-install Configuration](#post-install-configuration) | **Required** — proxy headers & archiving |
+| ✉️ | [Email (Gmail SMTP)](#email-gmail-smtp) | Scheduled reports & alerts |
 | 📈 | [Tracking a Site](#tracking-a-site) | Adding the JS tracker |
 | 💾 | [Backups & Restore](#backups--restore) | The Borg hook |
 | ⬆️ | [Upgrades](#upgrades) | Why the image tag isn't the Matomo version |
@@ -66,7 +67,7 @@ flowchart TB
 
         subgraph back["matomo-back · internal: true, no gateway"]
             direction LR
-            CRON["matomo-cron<br/>core:archive every<br/>ARCHIVE_INTERVAL"]
+            CRON["matomo-cron<br/>core:archive every<br/>ARCHIVE_INTERVAL<br/>also joined to matomo-egress"]
             DB[("matomo-db<br/>mariadb:11 · :3306")]
         end
 
@@ -84,6 +85,7 @@ flowchart TB
     end
 
     REPO[("🛡️ Borg repository")]
+    SMTP["✉️ smtp.gmail.com:587"]
 
     lan -. "resolve" .-> DNS
     V -->|"https · matomo.js / matomo.php"| T
@@ -92,6 +94,8 @@ flowchart TB
     MW -->|"http · X-Forwarded-For"| APP
     APP -->|SQL| DB
     CRON -->|SQL| DB
+    CRON -->|"matomo-egress · scheduled reports, alerts"| SMTP
+    APP -->|"edge · test mail, 'send now'"| SMTP
     APP --- HTML
     CRON --- HTML
     DB --- DBV
@@ -112,7 +116,7 @@ flowchart TB
     class DB database
     class HTML,DBV storage
     class HOOK,STAGE,REPO backup
-    class T,MW,DNS proxy
+    class T,MW,DNS,SMTP proxy
 ```
 
 ### Request & data flow
@@ -184,7 +188,7 @@ sequenceDiagram
 | Service | Image | Networks | Purpose |
 |---|---|---|---|
 | `matomo` | `matomo:5-apache` | `edge`, `matomo-back` | Web UI, reporting API, and the tracking endpoint (`matomo.php` / `matomo.js`). |
-| `matomo-cron` | `matomo:5-apache` | `matomo-back` | Runs `console core:archive` every `ARCHIVE_INTERVAL` seconds so reports are pre-aggregated. |
+| `matomo-cron` | `matomo:5-apache` | `matomo-back`, `matomo-egress` | Runs `console core:archive` every `ARCHIVE_INTERVAL` seconds so reports are pre-aggregated. Also sends scheduled email reports and alerts, hence the egress network. |
 | `matomo-db` | `mariadb:11` | `matomo-back` | Stores raw visit logs and archived reports. No published port. |
 
 **Storage**
@@ -194,8 +198,10 @@ sequenceDiagram
 | `matomo_html` | `/var/www/html` | The whole Matomo install: code, `config/config.ini.php`, plugins, `tmp/`. Shared by `matomo` and `matomo-cron`. |
 | `matomo_db` | `/var/lib/mysql` | MariaDB data dir. Local disk on purpose — InnoDB over NFS risks corruption. |
 
-`matomo-back` is `internal: true`: the DB and the archiver have no route off the host.
-Only `matomo` sits on `edge`, and it publishes no host ports — all ingress is via Traefik.
+`matomo-back` is `internal: true`: the DB has no route off the host. `matomo-cron` also
+joins `matomo-egress`, a plain bridge used only for outbound SMTP — scheduled reports are
+sent from inside `core:archive`, so without it every scheduled email fails.
+Only `matomo` sits on `edge`, and nothing publishes host ports — all ingress is via Traefik.
 
 ---
 
@@ -322,6 +328,57 @@ instead of waiting: `docker restart matomo-cron` starts one immediately, and
 > the step-ca certificate. They exist to confirm sensitive files aren't web-readable,
 > and the image already blocks them (`config/config.ini.php` returns 403). The warnings
 > are safe to ignore.
+
+---
+
+## Email (Gmail SMTP)
+
+Matomo sends test mails and *Send report now* from `matomo` (on `edge`), but **scheduled
+reports and custom alerts from `matomo-cron`** (on `matomo-egress`). Both containers need
+outbound access to the SMTP server. If only the scheduled ones fail, `matomo-cron` has no
+route out.
+
+Gmail won't take your account password over SMTP. You need an **App Password**: turn on
+2-Step Verification for the Google account, then create one at
+<https://myaccount.google.com/apppasswords> (16 characters, enter it without spaces).
+
+**Administration → System → General Settings → Email server settings:**
+
+| Field | Value |
+|---|---|
+| Use SMTP server for e-mail | Yes |
+| SMTP server address | `smtp.gmail.com` |
+| SMTP Port | `587` |
+| Authentication method | `Login` |
+| SMTP username | the full Gmail address |
+| SMTP password | the App Password |
+| SMTP encryption | `TLS` (STARTTLS). Use `SSL` only with port `465`. |
+
+Also set **Email "from" address** to the same Gmail address (or an alias verified in
+Gmail → *Send mail as*). Gmail rewrites or rejects other senders. The default
+`noreply@{DOMAIN}` becomes `noreply@matomo.shome`, which isn't a real domain.
+
+Matomo stores these in `config.ini.php` under `[mail]`. Check them and test from both
+containers:
+
+```bash
+docker exec matomo grep -A8 '^\[mail\]' /var/www/html/config/config.ini.php
+
+# Port check from each container. Expect "open" twice; a timeout or "no route" from
+# matomo-cron means it isn't on matomo-egress (redeploy the stack).
+for c in matomo matomo-cron; do
+  printf '%s: ' "$c"
+  docker exec "$c" php -r '$s=@fsockopen("smtp.gmail.com",587,$e,$m,5); echo ($s?"open":"FAIL: $m"),"\n";'
+done
+```
+
+Then send a real one: **Administration → Personal → Email Reports**, create a report and
+click **Send report now** (sent by `matomo`). The next scheduled send goes through
+`matomo-cron`; watch `docker logs matomo-cron` around that time for SMTP errors.
+
+> [!NOTE]
+> A redeploy keeps all data, but Portainer has to recreate `matomo-cron` to attach the
+> new network: **Stack → Update the stack** (or `docker compose up -d`).
 
 ---
 
@@ -476,6 +533,10 @@ in the compose file, so the image runs `mariadb-upgrade` itself after a bump.
 | Nothing in Visits Log | Tracker blocked: client outside `MATOMO_ALLOWLIST` (403 from Traefik), browser doesn't trust step-ca, or an ad blocker is blocking `matomo.js`. Check the browser dev-tools Network tab. |
 | `Access denied for user 'matomo'` | Password has punctuation mangled by Compose, or `.env` was changed after first init. See the warning under [Environment Variables](#environment-variables). |
 | `matomo` crash-loops with permission errors | Remove `cap_drop` / `cap_add` from the `matomo` service first, then investigate. |
+| Test email works, scheduled reports / alerts never arrive | `matomo-cron` has no outbound route. It must be on `matomo-egress`: `docker inspect -f '{{json .NetworkSettings.Networks}}' matomo-cron`. Redeploy the stack if it's missing. See [Email](#email-gmail-smtp). |
+| `535 5.7.8 Username and Password not accepted` | Gmail needs an App Password, not the account password (2-Step Verification must be on). Check the username is the full address. |
+| `530 5.7.0 Must issue a STARTTLS command first` / TLS handshake errors | Encryption doesn't match the port: `TLS` with `587`, `SSL` with `465`. |
+| Mail sent but lands in spam or shows a different sender | Set the *from* address to the Gmail account or a verified *Send mail as* alias. |
 | Archiver out of memory | Raise `PHP_MEMORY_LIMIT` and the `matomo-cron` `mem_limit` together. |
 
 ---

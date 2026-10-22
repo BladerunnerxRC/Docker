@@ -142,6 +142,10 @@ services:
 
     networks:
       - matomo-back   # reaches MariaDB; not on `edge`
+      # Outbound only. Scheduled email reports and custom alerts are sent from inside
+      # core:archive, i.e. from THIS container — without a gateway it can't reach the
+      # SMTP server (e.g. smtp.gmail.com:587) and every scheduled mail silently fails.
+      - matomo-egress
 
     depends_on:
       # Healthy app = entrypoint has finished populating matomo_html.
@@ -244,3 +248,8 @@ networks:
   matomo-back:
     driver: bridge
     internal: true
+
+  # Egress for matomo-cron (SMTP for scheduled reports). Nothing else joins it and
+  # nothing on it publishes ports, so it adds an outbound route and no inbound path.
+  matomo-egress:
+    driver: bridge
