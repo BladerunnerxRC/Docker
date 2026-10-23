@@ -1,6 +1,6 @@
 # Checkmk Deployment — Session Handoff
 
-> Context carried over from a claude.ai chat (2026-10-12). Read this first, then continue from "Next steps".
+> Context carried over from a claude.ai chat (2026-10-12), updated 2026-10-15. Read this first, then continue from "Next steps".
 > Host addresses, hardware specs, and other environment details live in the gitignored
 > `HANDOFF-POC.local.md` next to this file (local only — not in the public repo).
 
@@ -65,6 +65,71 @@ kubectl get node optiplex-two -o jsonpath='{.status.capacity.memory}{"\n"}{.stat
 ## Stack
 Source of truth: [`docker_compose.yml`](docker_compose.yml) in this folder.
 
+## Scripts in this folder
+| Script | Purpose | Docs |
+|---|---|---|
+| [`snmp-preflight.sh`](snmp-preflight.sh) | Test SNMP from inside the Checkmk container before adding a device | header comment |
+| [`create-piggyback-hosts.sh`](create-piggyback-hosts.sh) | Create container hosts from piggyback data and place them in stack folders | [`create-piggyback-hosts.md`](create-piggyback-hosts.md) |
+| [`ha_datasource.py`](ha_datasource.py) | Datasource program: HA OS host resources (System Monitor sensors via HA API) | [`homeassistant.md`](homeassistant.md) |
+
+## Checkmk host layout
+Established 2026-10-14/15. Site `cmk` runs **2.5.0p15**. IPs and SNMP credentials are in `HANDOFF-POC.local.md` or Checkmk only. Never put them in this public file.
+
+### Folder tree
+```
+Main/                          servers + network gear (agent / SNMP hosts)
+└─ Docker Stacks/                every container host lives below here (folder *name* = ROOT_FOLDER in the script, default `docker`; check the URL)
+    ├─ <stack>/                     one subfolder per Compose / Portainer stack
+    │   ├─ stack-<stack>            dummy "stack host" (topology node only)
+    │   └─ <node>_<container> …     container hosts (piggyback)
+    └─ <node>_<container>           single-container apps without a stack folder
+```
+
+| Level | Attributes set **here** (everything else inherited) |
+|---|---|
+| **Docker Stacks** folder | IP address family **No IP** · Checkmk agent **No API integrations, no Checkmk agent** · SNMP **No SNMP** · Piggyback **Always use and expect piggyback data** · label `type:container` |
+| **`<stack>`** subfolder | Parents **`stack-<stack>`** · label `stack:<stack>` |
+| **`stack-<stack>`** host | Parents **the Docker node** (overrides the folder, which would otherwise make it its own parent → core config error) · Piggyback **Never use piggyback data** · labels `role:stack`, `stack:<stack>` (host labels replace folder labels, so repeat `stack:`) |
+| **Container** hosts | **Nothing.** All inherited. Exception: containers directly in Docker Stacks set Parents = their Docker node. |
+
+Topology result: `sw-t2600g → <docker node> → stack-<stack> → containers`.
+
+### Container hosts (piggyback)
+- Agent plugin `mk_docker.py` is installed by hand on each Docker node (Community edition has no Agent Bakery): `/usr/lib/check_mk_agent/plugins/mk_docker.py` (sync, **not** `plugins/300/`), plus `python3-docker`.
+- `/etc/check_mk/docker.cfg` → `container_id: combined`, so host names are **`<node>_<container>`** (e.g. `optiplex-docker_komga`). A host named after the bare container gets no data.
+- `skip_sections: docker_container_agent` (no agents inside containers).
+- Bulk-create with [`create-piggyback-hosts.sh`](create-piggyback-hosts.sh): usage, scope and limits are in [`create-piggyback-hosts.md`](create-piggyback-hosts.md) (dry run by default, `--apply` to change). New hosts get no attributes and go into their Compose project's stack folder. The script creates the folder and the stack host when a project has ≥ 2 containers. It never touches existing hosts.
+- `Docker container health` service = the container's own `HEALTHCHECK` (Dockerfile or compose `healthcheck:`); Checkmk only reads Docker's status. Containers without one get no health service, so add healthchecks to stacks that lack them.
+- "No rate available (time anomaly)" / "Initializing counters" on a new container is normal for 1–2 check cycles. If it persists, check that the piggyback files refresh every minute and that node clocks agree.
+
+### Rules (Setup → search for the rule name)
+| Rule | Value | Condition |
+|---|---|---|
+| Host check command | Always assume host to be up | host label `role:stack` |
+| Enable/disable notifications for hosts | Disable | host label `role:stack` |
+| Network interface and switch port discovery | Appearance: **Use alias**; port states up + down | host label `cmk/device_type:switch` |
+| Network interfaces and switch ports | Ignore speed; states 1/2/7 → OK (desktop/room ports keep graphs, never alert) | host `sw-t2600g`, explicit services **negated** = infrastructure ports |
+
+### Switch (SNMP)
+- **TP-Link T2600G-18TS v2** (JetStream), host `sw-t2600g`, SNMP **v2c**, read-only community, `viewDefault` (whole tree). Credentials are in the Checkmk host properties only.
+- Verified with [`snmp-preflight.sh`](snmp-preflight.sh): sysDescr, ifTable, ifAlias, **64-bit counters** all pass.
+- Port names come from switch port descriptions (ifAlias). Set them in the switch UI under *L2 Features → Port Config*.
+- Parents: `sw-t2600g` has none (root). Every host cabled to it has Parents = `sw-t2600g`.
+- Expected quirks: CPU reads 75–85 % on this model (raise *CPU utilization for simple devices* to 90/95 if it alerts); PCs that are off report 10 Mbit/s (Wake-on-LAN), which is why desktop ports ignore speed.
+- TODO: move from the v2c community to a dedicated SNMPv3 `authPriv` user. Decide whether to retire LibreNMS (both currently poll the switch).
+
+### Pitfalls hit (don't repeat)
+- **A host must never be its own parent**, including through an inherited folder parent. It fails activation with `Host 'x' cannot be a child/parent of itself`. Find it with `docker exec -it checkmk su - cmk -c 'cmk -U 2>&1 | grep -i error'`.
+- **Revert changes** restores the snapshot from the last activation *attempt*, failed ones included. Fix the config and activate instead.
+- **Dummy hosts need IP address family = No IP**, otherwise activation warns `Cannot lookup IP address` and the host shows DOWN.
+- **Discovered host labels only apply after they're accepted**, so rules conditioned on `cmk/…` labels don't match until you click *Accept all*.
+
+### Checklist: add a new stack
+1. **Folder.** Create *Docker Stacks → Add folder* `<stack>`, then in its properties set Parents = `stack-<stack>` and Labels = `stack:<stack>`.
+2. **Dummy host.** Add `stack-<stack>` inside the folder with Parents = the Docker node it runs on (explicitly), Piggyback = **Never use piggyback data**, and Labels = `role:stack` + `stack:<stack>`. Leave IP/agent/SNMP inherited (No IP / no agent / no SNMP).
+3. **Containers.** Create or move the `<node>_<container>` hosts into the folder with **no** host attributes set (each field should read *inherited*). Or run `./create-piggyback-hosts.sh` first as a dry run, then with `--apply`.
+4. **Activate.** *Save & run service discovery* on one container to check that the data source reads `[piggyback] Success`, then **Activate changes**. On *Monitor → Parent / Child topology* the containers should hang under `stack-<stack>`.
+
 ## Next steps
 1. Confirm eviction-hard status (above).
 2. ~~Pre-flight port check on optiplex-two~~ — done, 8081/8000 free. Optionally extend the LV on optiplex-two (commands in local file).
@@ -86,7 +151,7 @@ Source of truth: [`docker_compose.yml`](docker_compose.yml) in this folder.
 10. Loft switch (TP-Link TL-SG205E "Easy Smart", identified 2026-10-19; IP and uplink in local file): **no SNMP** on this model. Monitor with ping plus an HTTP check on its web UI (expect 200), and keep the interface service for its uplink port on the T2600G (status, speed, errors). The T2600G's LLDP-MIB over SNMP shows neighbors, which is how the uplink was found.
 11. Borg backup-age local check on each Borg source host (alert if the last good archive is >26 h old). This is the main monitoring gap: DSM can't see Borg client failures.
 12. Kubernetes monitoring via Checkmk Kubernetes special agent + cluster collector.
-13. Add `checkmk-sites` volume to Borg backup set.
+13. ~~Add `checkmk-sites` volume to Borg backup set~~ - done 2026-10-20 (borg-backup 3.0.0, PR #28). optiplex-two's Borg prep runs `omd backup --no-compression cmk` every night into `databases/checkmk-cmk-<version>-<date-time>.omd.tar` (consistent; restore with `omd restore` on the same Checkmk version). The raw volume is also in the plan via `/var/lib/docker/volumes`. Still to do: one restore test - see [`borg-backup/HANDOFF.md`](../borg-backup/HANDOFF.md).
 
 ## Manual site backup / restore
 Quick, no downtime. Run on optiplex-two:
