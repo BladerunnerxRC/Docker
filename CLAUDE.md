@@ -1,3 +1,4 @@
 - Checkmk deployment state and next steps: see checkmk/HANDOFF-POC.md
 - Host IPs/hardware for Checkmk: checkmk/HANDOFF-POC.local.md (gitignored, local only)
 - Borg backup state, unmerged branches and next steps: see borg-backup/HANDOFF.md
+- Traefik sync/rollback script fix (branch fix-traefik-sync-script) state and next steps: see traefik/HANDOFF.md

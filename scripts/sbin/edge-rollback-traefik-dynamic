@@ -7,11 +7,14 @@
 #
 # Key behavior:
 #   - If no backup file provided, uses newest dynamic-live-*.tgz from backups dir
-#   - Archives current live dynamic dir before restoring
-#   - Restores backup into /opt/netlab-stack/traefik
+#   - Archives current live dynamic dir before restoring (REQUIRED - abort if it fails)
+#   - Extracts the backup to a staging folder, then rsync --delete into live, so
+#     files added after the backup are removed (no "ghost" routers)
 #   - Restarts Traefik container
-#   - Waits for Traefik API
-#   - Lists file-provider routers + middlewares + live dir listing
+#   - Waits until Traefik answers HTTPS
+#   - Fails if Traefik logged file-provider errors since the restore
+#   - Optional: lists file-provider routers + middlewares via the API, only if
+#     API_NETRC exists (see edge-sync-traefik-dynamic)
 #
 # Logging:
 #   - Console + /var/log/edge-sync/edge-rollback-traefik-dynamic.log
@@ -21,27 +24,27 @@
 #   This script uses a global exec+tee redirect so ALL stdout/stderr from commands
 #   are captured into BOTH logs and shown on screen.
 #------------------------------------------------------------------------------
-set -euo pipefail
+set -Eeuo pipefail
 
-DST="/opt/netlab-stack/traefik/dynamic"
-BK="/opt/netlab-stack/traefik/backups"
-ARCH="/opt/netlab-stack/traefik/dynamic-archive"
+BASE="/opt/netlab-stack/traefik"
+DST="${BASE}/dynamic"
+BK="${BASE}/backups"
+ARCH="${BASE}/dynamic-archive"
 
 TRAEFIK_CONTAINER="${TRAEFIK_CONTAINER:-traefik}"
-TRAEFIK_URL="${TRAEFIK_URL:-https://127.0.0.1:8080}"
 WAIT_SECONDS="${WAIT_SECONDS:-25}"
-TRAEFIK_RESOLVE=()
+SETTLE_SECONDS="${SETTLE_SECONDS:-5}"
 
+API_NETRC="${API_NETRC:-/etc/edge-sync/traefik-api.netrc}"
+API_HOST="${API_HOST:-traefik.shome}"
+API_IP="${API_IP:-}"
+
+LOCK_FILE="/run/edge-sync-traefik.lock"
 LOG_DIR="/var/log/edge-sync"
 LOG_MAIN="${LOG_DIR}/edge-rollback-traefik-dynamic.log"
 LOG_RUN="${LOG_DIR}/edge-rollback-traefik-dynamic-$(date +%Y%m%d-%H%M%S).log"
 
-mkdir -p "$LOG_DIR"
-touch "$LOG_MAIN" "$LOG_RUN"
-chmod 0644 "$LOG_MAIN" "$LOG_RUN"
-
-# Capture EVERYTHING (stdout+stderr) to console + both logs
-exec > >(tee -a "$LOG_MAIN" | tee -a "$LOG_RUN") 2>&1
+STAGE=""
 
 ts() { date '+%Y-%m-%d %H:%M:%S%z'; }
 info() { printf '%s [INFO] %s\n' "$(ts)" "$*"; }
@@ -58,7 +61,8 @@ on_err() {
   err "Tip: check log: $LOG_RUN"
   exit "$code"
 }
-trap on_err ERR
+
+cleanup() { [[ -z "$STAGE" ]] || rm -rf "$STAGE"; }
 
 usage() {
   cat <<EOF
@@ -70,21 +74,51 @@ backup.tgz    optional; if omitted, uses newest dynamic-live-*.tgz from:
 EOF
 }
 
+# Any HTTP status (404 for an unknown Host is normal) means Traefik is serving.
+traefik_answers() {
+  local code
+  code="$(curl -ks -o /dev/null -w '%{http_code}' --max-time 2 https://127.0.0.1/ || true)"
+  [[ -n "$code" && "$code" != "000" ]]
+}
+
+# Print file-provider names from an API endpoint; non-zero if the API is unusable.
+api_names() {
+  local out code
+  out="$(curl -ks --max-time 5 --netrc-file "$API_NETRC" \
+         --resolve "${API_HOST}:443:${API_IP}" -w '\n%{http_code}' \
+         "https://${API_HOST}/api/http/$1")" || return 1
+  code="${out##*$'\n'}"
+  [[ "$code" == "200" ]] || { info "  (API /api/http/$1 returned HTTP $code)"; return 1; }
+  printf '%s\n' "${out%$'\n'*}" | jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]'
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  --list)    ls -1t "${BK}"/dynamic-live-*.tgz 2>/dev/null || true; exit 0 ;;
+  -*)        echo "Unknown option: $1 (see --help)" >&2; exit 1 ;;
+esac
+
 need_root
 need tar
+need rsync
+need flock
 need docker
 need curl
 need jq
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  usage
-  exit 0
-fi
+# Shared with edge-sync-traefik-dynamic so the two never run at once.
+exec 9>"$LOCK_FILE"
+flock -n 9 || die "another edge-sync/rollback run is in progress ($LOCK_FILE)"
 
-if [[ "${1:-}" == "--list" ]]; then
-  ls -1t "${BK}"/dynamic-live-*.tgz 2>/dev/null || true
-  exit 0
-fi
+mkdir -p "$LOG_DIR"
+touch "$LOG_MAIN" "$LOG_RUN"
+chmod 0644 "$LOG_MAIN" "$LOG_RUN"
+
+# Capture EVERYTHING (stdout+stderr) to console + both logs
+exec > >(tee -a "$LOG_MAIN" | tee -a "$LOG_RUN") 2>&1
+
+trap on_err ERR
+trap cleanup EXIT
 
 BACKUP="${1:-}"
 if [[ -z "$BACKUP" ]]; then
@@ -96,43 +130,66 @@ START_EPOCH="$(date +%s)"
 
 info "run_log=$LOG_RUN"
 info "[1/7] Selected backup: $BACKUP"
+STAGE="$(mktemp -d "${BASE}/.rollback-staging-XXXXXX")"
+tar -xzf "$BACKUP" -C "$STAGE"
+[[ -d "${STAGE}/dynamic" ]] || die "backup has no top-level dynamic/ folder: $BACKUP"
 
-info "[2/7] Archive current live dynamic before restore"
+info "[2/7] Archive current live dynamic before restore (REQUIRED)"
 mkdir -p "$ARCH"
 ARCH_TGZ="${ARCH}/dynamic-pre-rollback-$(date +%Y-%m-%d-%H%M%S).tgz"
-tar -czf "$ARCH_TGZ" -C "$(dirname "$DST")" "$(basename "$DST")" || true
+tar -czf "$ARCH_TGZ" -C "$(dirname "$DST")" "$(basename "$DST")"
 info "archive_created=$ARCH_TGZ"
 
-info "[3/7] Restore backup -> /opt/netlab-stack/traefik"
-tar -xzf "$BACKUP" -C /opt/netlab-stack/traefik
+info "[3/7] Restore backup -> $DST (delete files not in the backup)"
+APPLY_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+rsync -a --delete --itemize-changes "${STAGE}/dynamic/" "${DST}/"
 
 info "[4/7] Restart Traefik container"
 docker restart "$TRAEFIK_CONTAINER" >/dev/null
 info "traefik_restarted"
 
-info "[5/7] Wait for Traefik API (up to ${WAIT_SECONDS}s)"
+info "[5/7] Wait for Traefik to answer HTTPS (up to ${WAIT_SECONDS}s)"
 for i in $(seq 1 "$WAIT_SECONDS"); do
-  if curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/overview" >/dev/null 2>&1; then
-    info "traefik_api_up_after=${i}s"
+  if traefik_answers; then
+    info "traefik_up_after=${i}s"
     break
   fi
   sleep 1
   if [[ "$i" -eq "$WAIT_SECONDS" ]]; then
-    err "Traefik API not reachable after ${WAIT_SECONDS}s"
+    err "Traefik not answering on https://127.0.0.1 after ${WAIT_SECONDS}s"
     docker logs --tail 200 "$TRAEFIK_CONTAINER" || true
+    err "Pre-rollback config is in: $ARCH_TGZ"
     exit 25
   fi
 done
+sleep "$SETTLE_SECONDS"
 
-info "[6/7] Verify file-provider routers"
-info "-- File routers:"
-curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/routers" \
-| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' || true
+info "[6/7] Check Traefik log for file-provider errors since restore"
+errs="$(docker logs --since "$APPLY_TS" "$TRAEFIK_CONTAINER" 2>&1 \
+        | grep -E 'level=error| ERR ' | grep -E '@file|providerName=file|/etc/traefik/dynamic' || true)"
+if [[ -n "$errs" ]]; then
+  err "Traefik logged file-provider errors after the restore:"
+  printf '%s\n' "$errs" >&2
+  err "Pre-rollback config is in: $ARCH_TGZ"
+  exit 30
+fi
+info "no file-provider errors in Traefik log since $APPLY_TS"
 
-info "[7/7] Verify file-provider middlewares + live dir"
-info "-- File middlewares:"
-curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/middlewares" \
-| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' || true
+info "[7/7] File-provider routers + middlewares (optional) + live dir"
+if [[ -r "$API_NETRC" ]]; then
+  [[ -n "$API_IP" ]] || API_IP="$(ip -4 route get 1.1.1.1 2>/dev/null \
+    | awk '{for(i=1;i<NF;i++) if($i=="src"){print $(i+1); exit}}' || true)"
+  if [[ -z "$API_IP" ]]; then
+    warn "skip API listing - could not work out this host's LAN IP (set API_IP)"
+  else
+    info "-- File routers:"
+    api_names routers || warn "API listing unavailable"
+    info "-- File middlewares:"
+    api_names middlewares || warn "API listing unavailable"
+  fi
+else
+  info "skip API listing - no credentials file at $API_NETRC"
+fi
 
 info "-- Live dynamic dir:"
 ls -la "$DST" || true

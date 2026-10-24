@@ -32,7 +32,8 @@ traefik/dynamic/
 > [!NOTE]
 > This path used to be `stacks/edge-stack/traefik/dynamic/`. The repo was
 > flattened in `e23e361` (2026-07-01) and every stack moved up to the repo root.
-> See [Known issue: sync script path](#known-issue-sync-script-path).
+> `edge-sync-traefik-dynamic` read the old path until it was fixed on the
+> `fix-traefik-sync-script` branch, so deploys did nothing between those dates.
 
 ### What each file does
 
@@ -81,37 +82,11 @@ On the server (smiddleware), Traefik consumes the synced dynamic config from:
 
 ## D&R Scripts (Deploy & Recover)
 
-### Known issue: sync script path
-
-> [!CAUTION]
-> `edge-sync-traefik-dynamic` was never updated for the repo flatten and still reads the
-> old layout. **Deploys have been a no-op since the flatten.**
-
-```bash
-# scripts/sbin/edge-sync-traefik-dynamic:24
-SRC="${REPO}/stacks/edge-stack/traefik/dynamic"   # path no longer exists
-```
-
-Because step 1/9 hard-resets the server clone to `origin/main`, that directory is gone
-after the fetch and the script aborts at step 2/9:
-
-```text
-missing source dir: /opt/git/Docker/stacks/edge-stack/traefik/dynamic
-```
-
-It **fails safe** — the abort happens before the backup, rsync, and Traefik restart, so
-the live config is never touched. The fix is a one-line change to line 24:
-
-```bash
-SRC="${REPO}/traefik/dynamic"
-```
-
-`edge-rollback-traefik-dynamic` is unaffected; it only reads from
-`/opt/netlab-stack/traefik/backups` and never touches the repo.
-
 ### Installed scripts
 
-These are installed on smiddleware:
+These are installed on smiddleware. The copies in `scripts/sbin/` are the source; merging
+does **not** update `/usr/local/sbin`, so install after every change (see
+[Install / update the scripts](#install--update-the-scripts)):
 
 ```text
 /usr/local/sbin/
@@ -144,17 +119,23 @@ This is your “Deploy” in D&R.
 
 What it does:
 
-1. Hard-sync repo clone to `origin/main` (pull-only server model)
-2. Create tar backup of the current live dynamic config
-3. `rsync --delete` repo dynamic → live dynamic
-4. Validate YAML (fails safely if YAML is broken)
-5. Restart Traefik
-6. Wait for API readiness
-7. Verify file-provider routers/middlewares
+1. Fetch `origin/main` and hard-reset the clone (pull-only server model)
+2. Extract `traefik/dynamic/` into a staging folder **outside** the watched folder
+3. Validate YAML in staging — if it fails, live is never touched
+4. Compare live with the repo; stop if they already match (`--dry-run` shows the diff and stops here)
+5. Create tar backup of the current live dynamic config (the run stops if this fails)
+6. `rsync --delete` staging → live dynamic
+7. Restart Traefik
+8. Wait until Traefik answers HTTPS on `127.0.0.1` (any status, no API or login needed)
+9. Fail if Traefik logged file-provider errors since step 6; list file-provider
+   routers/middlewares through the API only if a credentials file exists (below)
+
+If anything fails after step 6, the script prints the exact rollback command.
 
 Run:
 
 ```bash
+sudo /usr/local/sbin/edge-sync-traefik-dynamic --dry-run   # always first: read the diff
 sudo /usr/local/sbin/edge-sync-traefik-dynamic
 ```
 
@@ -162,8 +143,42 @@ Help / options:
 
 ```bash
 sudo /usr/local/sbin/edge-sync-traefik-dynamic --help
-sudo /usr/local/sbin/edge-sync-traefik-dynamic --dry-run
 sudo /usr/local/sbin/edge-sync-traefik-dynamic --list-backups
+sudo /usr/local/sbin/edge-sync-traefik-dynamic --branch <name> [--dry-run]   # test a branch
+```
+
+> [!TIP]
+> **Optional API listing.** The API sits behind the IP allowlist + basic auth, so the
+> scripts only list routers when `/etc/edge-sync/traefik-api.netrc` exists:
+>
+> ```bash
+> sudo install -d -m 0700 /etc/edge-sync
+> sudo install -m 0600 /dev/null /etc/edge-sync/traefik-api.netrc
+> sudoedit /etc/edge-sync/traefik-api.netrc
+> #   machine traefik.shome login tpadmin password <password>
+> ```
+>
+> The request goes to the host's LAN IP (`API_IP` overrides it), because a request to
+> `127.0.0.1` reaches Traefik from a Docker `172.x` address that the allowlist refuses.
+
+### Install / update the scripts
+
+Run the **installed** copy, never the one in `/opt/git/Docker`: the sync script resets that
+clone while it runs.
+
+```bash
+# from main, after merging
+cd /opt/git/Docker && git pull --ff-only
+sudo install -m 0755 scripts/sbin/edge-sync-traefik-dynamic    /usr/local/sbin/
+sudo install -m 0755 scripts/sbin/edge-rollback-traefik-dynamic /usr/local/sbin/
+
+# from a branch, before merging (doesn't touch the clone's checkout)
+B=fix-traefik-sync-script
+git -C /opt/git/Docker fetch origin "+refs/heads/$B:refs/remotes/origin/$B"
+for s in edge-sync-traefik-dynamic edge-rollback-traefik-dynamic; do
+  git -C /opt/git/Docker show "origin/$B:scripts/sbin/$s" > "/tmp/$s"
+  sudo install -m 0755 "/tmp/$s" /usr/local/sbin/ && rm "/tmp/$s"
+done
 ```
 
 ### 3) Recover / Rollback (if needed)
@@ -173,11 +188,12 @@ This is your “Recover” in D&R.
 What it does:
 
 1. Choose latest backup tarball (or user-supplied file)
-2. Archive current live dynamic as a safety snapshot
-3. Restore selected tarball
+2. Archive current live dynamic as a safety snapshot (the run stops if this fails)
+3. Restore selected tarball via staging + `rsync --delete`, so files added after the
+   backup are removed instead of lingering as ghost routers
 4. Restart Traefik
-5. Wait for API readiness
-6. Verify file-provider routers/middlewares
+5. Wait until Traefik answers HTTPS
+6. Fail if Traefik logged file-provider errors; optional API listing as above
 
 Rollback to newest:
 

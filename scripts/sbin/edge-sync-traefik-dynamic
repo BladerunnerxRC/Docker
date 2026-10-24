@@ -1,41 +1,87 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 # -----------------------------------------------------------------------------
 # edge-sync-traefik-dynamic
 #
+# Deploy Traefik file-provider config (traefik/dynamic/ in the repo) to the
+# live folder Traefik watches.
+#
+# Usage:
+#   sudo edge-sync-traefik-dynamic [--dry-run] [--branch BRANCH]
+#   sudo edge-sync-traefik-dynamic --list-backups
+#     --dry-run       fetch + validate, then show the diff live -> repo; change nothing
+#     --branch NAME   deploy from origin/NAME instead of origin/main (for testing)
+#     --list-backups  list backup tarballs, newest first
+#
+# Run the installed copy (/usr/local/sbin), never the one inside the clone: the
+# script resets the clone it would be running from.
+#
 # Output:
-#   Clean step output on screen (==[x/8] ...==)
+#   Clean step output on screen (==[x/9] ...==)
 # Logging:
 #   - Main log: /var/log/edge-sync/edge-sync-traefik-dynamic.log
 #   - Per-run:   /var/log/edge-sync/edge-sync-traefik-dynamic-YYYYmmdd-HHMMSS.log
 #
 # Behavior:
-#   - Pull-only server: hard reset repo to origin/main as user "thomas"
-#   - Backup live dynamic folder
-#   - Rsync repo dynamic -> live dynamic (delete removed files)
-#   - Validate YAML (REQUIRED)
-#   - Restart Traefik
-#   - Wait for Traefik API
-#   - List file-provider routers + middlewares + live dir listing
+#   - Pull-only server: fetch origin as user "thomas" (main: hard reset the clone)
+#   - Extract repo dynamic/ into a staging folder OUTSIDE the watched folder
+#   - Validate YAML in staging (REQUIRED) - live is untouched if this fails
+#   - Backup live dynamic folder (REQUIRED - abort if the backup fails)
+#   - Rsync staging -> live (delete removed files)
+#   - Restart Traefik, wait until it answers HTTPS
+#   - Fail if Traefik logged file-provider errors since the apply
+#   - Optional: list file-provider routers + middlewares via the API, only if
+#     API_NETRC exists (root-only netrc with the dashboard basic-auth login)
+#
+# Exit codes: 0 ok / nothing to do, 1 usage or precondition, 12/13 YAML invalid
+# or empty, 25 Traefik not answering, 30 Traefik logged config errors.
 # -----------------------------------------------------------------------------
 
 REPO="/opt/git/Docker"
-SRC="${REPO}/stacks/edge-stack/traefik/dynamic"
-DST="/opt/netlab-stack/traefik/dynamic"
-BK="/opt/netlab-stack/traefik/backups"
+SRC_REL="traefik/dynamic"
+BASE="/opt/netlab-stack/traefik"
+DST="${BASE}/dynamic"
+BK="${BASE}/backups"
 
+GIT_USER="${GIT_USER:-thomas}"
 TRAEFIK_CONTAINER="${TRAEFIK_CONTAINER:-traefik}"
-TRAEFIK_URL="${TRAEFIK_URL:-https://127.0.0.1:8080}"
 WAIT_SECONDS="${WAIT_SECONDS:-25}"
+# Providers finish loading a few seconds after the entrypoints answer.
+SETTLE_SECONDS="${SETTLE_SECONDS:-5}"
 
-# Optional curl SNI->IP override if needed:
-# TRAEFIK_RESOLVE=(--resolve "traefik.lab.local:443:127.0.0.1")
-TRAEFIK_RESOLVE=()
+# Optional API listing. The API is only served via the traefik.<domain> router
+# behind an IP allowlist + basic auth, so it needs a netrc and the host's LAN IP
+# (127.0.0.1 arrives via docker-proxy from a 172.x address and is refused).
+#   /etc/edge-sync/traefik-api.netrc (root:root 0600):
+#     machine traefik.shome login tpadmin password <password>
+API_NETRC="${API_NETRC:-/etc/edge-sync/traefik-api.netrc}"
+API_HOST="${API_HOST:-traefik.shome}"
+API_IP="${API_IP:-}"
 
+LOCK_FILE="/run/edge-sync-traefik.lock"
 LOG_DIR="/var/log/edge-sync"
 LOG_MAIN="${LOG_DIR}/edge-sync-traefik-dynamic.log"
 LOG_RUN="${LOG_DIR}/edge-sync-traefik-dynamic-$(date +%Y%m%d-%H%M%S).log"
+
+BRANCH="main"
+DRY_RUN=0
+LIST_BACKUPS=0
+STAGE=""
+BK_TGZ=""
+LIVE_CHANGED=0
+
+usage() { awk 'NR>5 {if (!/^#/) exit; sub(/^# ?/,""); print}' "$0"; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)      DRY_RUN=1; shift ;;
+    --branch)       BRANCH="${2:?--branch needs a value}"; shift 2 ;;
+    --list-backups) LIST_BACKUPS=1; shift ;;
+    -h|--help)      usage; exit 0 ;;
+    *)              echo "Unknown option: $1 (see --help)" >&2; exit 1 ;;
+  esac
+done
 
 step() { echo "==[$1] $2 =="; }
 die()  { echo "ERROR: $*" >&2; exit 1; }
@@ -43,18 +89,28 @@ die()  { echo "ERROR: $*" >&2; exit 1; }
 need_root() { [[ "${EUID}" -eq 0 ]] || die "run as root: sudo $0"; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
+rollback_hint() {
+  if [[ "$LIVE_CHANGED" -eq 1 ]]; then
+    echo "ERROR: Live config WAS changed. To restore the previous config:" >&2
+    echo "ERROR:   sudo edge-rollback-traefik-dynamic $BK_TGZ" >&2
+  fi
+}
+
 on_err() {
   local code=$?
   echo "ERROR: FAILED (exit=$code) at line ${BASH_LINENO[0]}: ${BASH_COMMAND}" >&2
+  rollback_hint
   echo "ERROR: See log: $LOG_RUN" >&2
   exit "$code"
 }
-trap on_err ERR
+
+cleanup() { [[ -z "$STAGE" ]] || rm -rf "$STAGE"; }
 
 validate_yaml() {
-  # REQUIRED: fail the run if YAML is invalid.
+  # REQUIRED: fail the run if YAML is invalid or there is nothing to deploy
+  # (an empty source + rsync --delete would wipe live).
   # Requires: python3 + python3-yaml
-  python3 - <<'PY'
+  python3 - "$1" <<'PY'
 import glob, sys
 try:
     import yaml
@@ -62,11 +118,15 @@ except Exception:
     print("ERROR: PyYAML not installed. Install: sudo apt-get install -y python3-yaml", file=sys.stderr)
     sys.exit(11)
 
-dst = "/opt/netlab-stack/traefik/dynamic"
+dst = sys.argv[1]
 files = sorted(
     glob.glob(dst + "/**/*.yml", recursive=True) +
     glob.glob(dst + "/**/*.yaml", recursive=True)
 )
+
+if not files:
+    print(f"ERROR: no YAML files in {dst}", file=sys.stderr)
+    sys.exit(13)
 
 bad = []
 for f in files:
@@ -86,15 +146,46 @@ print(f"OK: YAML validated ({len(files)} files)")
 PY
 }
 
+# Any HTTP status (404 for an unknown Host is normal) means Traefik is serving.
+traefik_answers() {
+  local code
+  code="$(curl -ks -o /dev/null -w '%{http_code}' --max-time 2 https://127.0.0.1/ || true)"
+  [[ -n "$code" && "$code" != "000" ]]
+}
+
+# Print file-provider names from an API endpoint; non-zero if the API is unusable.
+api_names() {
+  local out code
+  out="$(curl -ks --max-time 5 --netrc-file "$API_NETRC" \
+         --resolve "${API_HOST}:443:${API_IP}" -w '\n%{http_code}' \
+         "https://${API_HOST}/api/http/$1")" || return 1
+  code="${out##*$'\n'}"
+  [[ "$code" == "200" ]] || { echo "  (API /api/http/$1 returned HTTP $code)"; return 1; }
+  printf '%s\n' "${out%$'\n'*}" | jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]'
+}
+
+if [[ "$LIST_BACKUPS" -eq 1 ]]; then
+  ls -1t "${BK}"/dynamic-live-*.tgz 2>/dev/null || echo "no backups in $BK"
+  exit 0
+fi
+
+[[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || die "'$BRANCH' is not a valid branch name"
+
 # --- requirements ---
 need_root
 need git
 need rsync
 need tar
+need diff
+need flock
 need docker
 need curl
 need jq
 need python3
+
+# Shared with edge-rollback-traefik-dynamic so the two never run at once.
+exec 9>"$LOCK_FILE"
+flock -n 9 || die "another edge-sync/rollback run is in progress ($LOCK_FILE)"
 
 mkdir -p "$LOG_DIR"
 touch "$LOG_MAIN" "$LOG_RUN"
@@ -106,68 +197,117 @@ chmod 0644 "$LOG_MAIN" "$LOG_RUN"
 #   - per-run log
 exec > >(tee -a "$LOG_MAIN" | tee -a "$LOG_RUN") 2>&1
 
+trap on_err ERR
+trap cleanup EXIT
+
 echo "run_log=$LOG_RUN"
+[[ "$DRY_RUN" -eq 0 ]] || echo "mode=DRY-RUN (live config will not be changed)"
 
-step "0/9" "Ensure root trusts GitHub host key (non-interactive)"
-ssh-keyscan -H github.com >>/root/.ssh/known_hosts 2>/dev/null || true
+step "1/9" "Fetch origin/${BRANCH} (git as ${GIT_USER})"
+[[ -d "${REPO}/.git" ]] || die "repo clone not found: $REPO"
+sudo -u "$GIT_USER" git -C "$REPO" fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+if [[ "$BRANCH" == "main" && "$DRY_RUN" -eq 0 ]]; then
+  # Keep the pull-only working copy current, as before.
+  sudo -u "$GIT_USER" git -C "$REPO" checkout -q main
+  sudo -u "$GIT_USER" git -C "$REPO" reset -q --hard origin/main
+fi
+COMMIT="$(sudo -u "$GIT_USER" git -C "$REPO" rev-parse "origin/${BRANCH}")"
+echo "branch=${BRANCH} commit=${COMMIT}"
 
-step "1/9" "Sync repo clone to origin/main (git as thomas)"
-cd "$REPO"
-sudo -u thomas git fetch origin
-sudo -u thomas git checkout -q main
-sudo -u thomas git reset --hard origin/main
-
-step "2/9" "Sanity checks"
-[[ -d "$SRC" ]] || die "missing source dir: $SRC"
+step "2/9" "Extract ${SRC_REL} to staging (outside the watched folder)"
+sudo -u "$GIT_USER" git -C "$REPO" cat-file -e "origin/${BRANCH}:${SRC_REL}" 2>/dev/null \
+  || die "missing source dir on origin/${BRANCH}: ${SRC_REL}"
 mkdir -p "$DST" "$BK"
+STAGE="$(mktemp -d "${BASE}/.sync-staging-XXXXXX")"
+sudo -u "$GIT_USER" git -C "$REPO" archive --format=tar "origin/${BRANCH}" -- "$SRC_REL" \
+  | tar -x -C "$STAGE" --strip-components=2 --no-same-owner
+# Match live's owner/mode so rsync -a doesn't change them.
+chown -R --reference="$DST" "$STAGE"
+chmod --reference="$DST" "$STAGE"
 
-step "3/9" "Backup live dynamic folder"
+step "3/9" "Validate YAML in staging (REQUIRED)"
+validate_yaml "$STAGE"
+
+step "4/9" "Compare live with origin/${BRANCH}"
+if diff -rq "$DST" "$STAGE" >/dev/null; then
+  echo "Live config already matches ${COMMIT:0:7}. Nothing to do."
+  exit 0
+fi
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  rc=0
+  diff -ruN "$DST" "$STAGE" || rc=$?
+  [[ "$rc" -le 1 ]] || die "diff failed (exit $rc)"
+  echo "DRY-RUN: '-' lines are live now, '+' lines are what would be deployed."
+  echo "DRY-RUN DONE. Nothing was changed."
+  exit 0
+fi
+diff -rq "$DST" "$STAGE" || true
+
+step "5/9" "Backup live dynamic folder (REQUIRED)"
 BK_TGZ="${BK}/dynamic-live-$(date +%Y-%m-%d-%H%M%S).tgz"
-tar -czf "$BK_TGZ" -C "$(dirname "$DST")" "$(basename "$DST")" || true
+tar -czf "$BK_TGZ" -C "$(dirname "$DST")" "$(basename "$DST")"
 echo "backup_created=$BK_TGZ"
 
-step "4/9" "Move live backup dir out of watched folder (if present)"
 if [[ -d "${DST}/backups" ]]; then
-  mv -f "${DST}/backups" "/opt/netlab-stack/traefik/backups-in-dynamic-$(date +%Y%m%d-%H%M%S)" || true
+  mv -f "${DST}/backups" "${BASE}/backups-in-dynamic-$(date +%Y%m%d-%H%M%S)"
   echo "moved_backups_dir_out_of_dynamic"
-else
-  echo "no_live_backup_dir_found"
 fi
 
-step "5/9" "Rsync repo -> live (delete removed files)"
-rsync -a --delete --itemize-changes "${SRC}/" "${DST}/" || true
-
-step "6/9" "Validate YAML in live dynamic folder (REQUIRED)"
-validate_yaml
+step "6/9" "Rsync staging -> live (delete removed files)"
+APPLY_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+LIVE_CHANGED=1
+rsync -a --delete --itemize-changes "${STAGE}/" "${DST}/"
+echo "deployed_commit=${COMMIT}"
 
 step "7/9" "Restart Traefik"
 docker restart "$TRAEFIK_CONTAINER" >/dev/null
 echo "traefik_restarted"
 
-step "8/9" "Wait for Traefik API (up to ${WAIT_SECONDS}s)"
+step "8/9" "Wait for Traefik to answer HTTPS (up to ${WAIT_SECONDS}s)"
 for i in $(seq 1 "$WAIT_SECONDS"); do
-  if curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/overview" >/dev/null 2>&1; then
-    echo "Traefik API is up."
+  if traefik_answers; then
+    echo "Traefik is up after ${i}s."
     break
   fi
   sleep 1
   if [[ "$i" -eq "$WAIT_SECONDS" ]]; then
-    echo "ERROR: Traefik API not reachable after ${WAIT_SECONDS}s" >&2
+    echo "ERROR: Traefik not answering on https://127.0.0.1 after ${WAIT_SECONDS}s" >&2
     docker logs --tail 200 "$TRAEFIK_CONTAINER" || true
+    rollback_hint
     exit 25
   fi
 done
+sleep "$SETTLE_SECONDS"
 
-step "9/9" "Verify file-provider routers + middlewares"
-echo "-- File routers:"
-curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/routers" \
-| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' || true
+step "9/9" "Verify: Traefik log errors since apply, then API listing (optional)"
+# level=error is the logfmt form, " ERR " the v3 console form. Only file-provider
+# lines count, so an unrelated http/docker provider error doesn't fail the deploy.
+errs="$(docker logs --since "$APPLY_TS" "$TRAEFIK_CONTAINER" 2>&1 \
+        | grep -E 'level=error| ERR ' | grep -E '@file|providerName=file|/etc/traefik/dynamic' || true)"
+if [[ -n "$errs" ]]; then
+  echo "ERROR: Traefik logged file-provider errors after the deploy:" >&2
+  printf '%s\n' "$errs" >&2
+  rollback_hint
+  exit 30
+fi
+echo "OK: no file-provider errors in Traefik log since $APPLY_TS"
 
-echo "-- File middlewares:"
-curl -kfsS "${TRAEFIK_RESOLVE[@]}" "$TRAEFIK_URL/api/http/middlewares" \
-| jq -r 'map(select(.provider=="file")) | map(.name) | sort | .[]' || true
+if [[ -r "$API_NETRC" ]]; then
+  [[ -n "$API_IP" ]] || API_IP="$(ip -4 route get 1.1.1.1 2>/dev/null \
+    | awk '{for(i=1;i<NF;i++) if($i=="src"){print $(i+1); exit}}' || true)"
+  if [[ -z "$API_IP" ]]; then
+    echo "SKIP: API listing - could not work out this host's LAN IP (set API_IP)"
+  else
+    echo "-- File routers:"
+    api_names routers || echo "SKIP: API listing unavailable"
+    echo "-- File middlewares:"
+    api_names middlewares || echo "SKIP: API listing unavailable"
+  fi
+else
+  echo "SKIP: API listing - no credentials file at $API_NETRC"
+fi
 
 echo "-- Live dynamic dir:"
 ls -la "$DST" || true
 
-echo "DONE."
+echo "DONE. Deployed ${COMMIT:0:7} from origin/${BRANCH}. Backup: $BK_TGZ"
