@@ -1,6 +1,6 @@
 # Traefik Sync Script — Session Handoff
 
-> State as of 2026-10-23. Read this first, then continue from "Next steps".
+> State as of 2026-10-24. Read this first, then continue from "Next steps".
 > Reference material (layout, D&R flow, install commands) lives in [`README.md`](README.md);
 > this file records only state, open items and what to do next.
 
@@ -21,10 +21,23 @@ with a working rollback.
 - **Keep `docker restart`** after applying, as before. Strictly unneeded (`watch: true` hot-reloads).
 
 ## State
-- Branch **`fix-traefik-sync-script`** (from `main` at `4880d3c`).
-- **Not committed, not pushed, not tested on smiddleware.** Only `bash -n`, `--help`, unknown-option
-  rejection and the `git archive | tar` extract step were checked, on Windows. shellcheck
-  wasn't run: it isn't installed and Docker couldn't pull the image (credential-helper error).
+- Branch **`fix-traefik-sync-script`** (from `main` at `4880d3c`), **committed and pushed**.
+- **Not yet run on smiddleware.** Only `bash -n`, `--help`, unknown-option rejection and the
+  `git archive | tar` extract step were checked, on Windows. shellcheck wasn't run: it isn't
+  installed and Docker couldn't pull the image (credential-helper error).
+- **Live config had drifted ahead of the repo** (hand edits on the server, 2026-10-05): webmin
+  Host-header middlewares, `webmin-optiplex-three` router/service, `wud` service,
+  `passHostHeader: true` on webmin, and `grafana`/`nocodb`/`rancher` removed. On 2026-10-24 the
+  live `*.yml` were copied back into `traefik/dynamic/` on this branch, so a deploy should now
+  be a no-op apart from blank lines.
+- Read-only checks on smiddleware (2026-10-24, as thomas over SSH; `thomas` is in the `docker`
+  group, sudo needs a password):
+  - Step 2 prerequisites all OK: `python3-yaml` (6.0.2), `rsync`, `jq`, `flock`; `/opt/git/Docker`
+    owned by thomas (on `main`, behind origin, irrelevant since the script reads `origin/<branch>`);
+    live `dynamic/` is `thomas:thomas 0755`; Traefik `v3.7.10`.
+  - Step 4 baseline: **zero** `level=error`/` ERR ` lines in 48 h (container up 2 days).
+  - `/usr/local/sbin/edge-*-traefik-dynamic` are still the **old** versions (Dec 2025); the old
+    sync ignores `--dry-run` and would do a real deploy.
 - Changed files:
   - [`scripts/sbin/edge-sync-traefik-dynamic`](../scripts/sbin/edge-sync-traefik-dynamic) — rewritten
   - [`scripts/sbin/edge-rollback-traefik-dynamic`](../scripts/sbin/edge-rollback-traefik-dynamic) — fixed
@@ -55,15 +68,16 @@ with a working rollback.
 - Unknown `-options` are rejected; root/args checked before touching `/var/log`.
 
 ## Next steps (in order)
-1. **Review the diff** (`git diff main`), then commit and push the branch. The server can only
-   test it once it's on GitHub.
-2. On smiddleware, check the prerequisites: `python3-yaml`, `rsync`, `jq`, `flock` (util-linux)
-   are installed; `/opt/git/Docker` is a clone owned by thomas; `ls -ld /opt/netlab-stack/traefik/dynamic`
-   (staging copies this owner/mode).
+1. ~~Commit and push the branch.~~ Done.
+2. ~~Check prerequisites on smiddleware.~~ Done 2026-10-24, all OK (see State).
+   **Still to do:** move `/opt/netlab-stack/traefik/dynamic/traefik-dynamic-archive.sh`
+   (root-owned, not in the repo) out of the watched folder, e.g. to `/usr/local/sbin/`, or the
+   first real sync's `rsync --delete` will delete it. Needs sudo.
 3. Install the **branch** copies into `/usr/local/sbin` (README → "Install / update the scripts",
    branch variant). Keep a copy of the old ones first:
    `sudo cp /usr/local/sbin/edge-*-traefik-dynamic ~/`.
-4. **Baseline the log check** before any real run, so you know what "normal" looks like.
+4. ~~Baseline the log check.~~ Done 2026-10-24: no errors at all in 48 h. Re-run just before
+   step 6 if days have passed. Original note:
    ACME issue/renewal errors name the router (e.g. `routerName=komga@file`), so they'd match
    the filter and make a good deploy exit 30:
    ```bash
@@ -73,9 +87,9 @@ with a working rollback.
    If this shows recurring ACME/renewal lines, change both scripts to report those as a
    warning instead of failing, before step 6.
 5. `sudo edge-sync-traefik-dynamic --dry-run --branch fix-traefik-sync-script`
-   **Read the diff carefully.** Live hasn't been synced since 2026-07-01, so any hand edits on
-   the server will show as `-` lines and would be removed. Copy anything worth keeping into the
-   repo first.
+   **Read the diff carefully.** The Oct 5 hand edits are already in the repo, so expect only
+   blank-line changes plus `deleting traefik-dynamic-archive.sh` if step 2's move wasn't done.
+   Any real `-` line means live changed again since 2026-10-24: copy it into the repo first.
 6. Real run: `sudo edge-sync-traefik-dynamic --branch fix-traefik-sync-script`.
    **Exit 30 means the new config IS live and Traefik logged errors about it.** Read the
    printed lines before deciding whether to run the rollback command it prints.
@@ -96,16 +110,13 @@ with a working rollback.
   `git ls-files --eol scripts/sbin` must still show `i/lf`.
 
 ## Open items (not changed, reported only)
-- [`dynamic/30-services.yml`](dynamic/30-services.yml): `rancher` uses
-  `serversTransport: rancher-https`, which isn't defined in `00-servers-transports.yml`.
-  No router points at `rancher`, so it may not error today. Either define the transport or
-  delete the service. If it does log an error, the new log check fails the deploy (exit 30),
-  so check this before step 6.
+- ~~`rancher` service with undefined `rancher-https` transport~~ and ~~services with no router
+  (`grafana`, `nocodb`)~~: gone, resolved by pulling the live config back (2026-10-24).
 - [`dynamic/20-routers.yml`](dynamic/20-routers.yml): `k3s-catchall` uses v2 syntax
   ``HostRegexp(`{name:[a-z0-9-]+}.shome`)``. On v3 it's read as a literal regex and matches
   nothing. v3 form: ``HostRegexp(`^[a-z0-9-]+\.shome$`)``. Note: once it works, it catches
   **every** `*.shome` host that has no other router (priority 10) and sends it to k3s.
-- Services with no router: `grafana`, `nocodb`, `whoami` (file provider). Harmless.
+- Service with no router: `whoami` (file provider). Harmless.
 - `traefik.yml` (static config) isn't deployed by any script; it's mounted from
   `/opt/netlab-stack/traefik/traefik.yml` and needs a manual copy + restart.
 - Possible follow-up: add `scripts/sbin/*` to CI with `bash -n` + shellcheck, like

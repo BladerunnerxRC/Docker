@@ -5,13 +5,6 @@ http:
         passHostHeader: true
         servers:
           - url: "http://192.168.200.98:3333"
-
-    grafana:
-      loadBalancer:
-        passHostHeader: true
-        servers:
-          - url: "http://192.168.200.98:3000"
-
     haos:
       loadBalancer:
         passHostHeader: true
@@ -54,39 +47,45 @@ http:
         servers:
           - url: "http://192.168.200.98:8888"
 
-    nocodb:
-      loadBalancer:
-        passHostHeader: true
-        servers:
-          - url: "http://192.168.200.98:7777"
-
     whoami:
       loadBalancer:
         passHostHeader: true
         servers:
           - url: "http://192.168.200.98:80"
 
+    wud:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://192.168.200.14:3001"
 
     webmin-mid:
       loadBalancer:
-        passHostHeader: false
+        passHostHeader: true
         serversTransport: webmin-insecure
         servers:
           - url: "https://192.168.200.52:10000"
 
     webmin-opti:
       loadBalancer:
-        passHostHeader: false
+        passHostHeader: true
         serversTransport: webmin-insecure
         servers:
           - url: "https://192.168.200.98:10000"
 
     webmin-optiplex-two:
       loadBalancer:
-        passHostHeader: false
+        passHostHeader: true
         serversTransport: webmin-insecure
         servers:
           - url: "https://192.168.200.14:10000"
+
+    webmin-optiplex-three:
+      loadBalancer:
+        passHostHeader: true
+        serversTransport: webmin-insecure
+        servers:
+          - url: "https://192.168.200.65:10000"
 
     # k3s ingress upstream (k3s traefik LoadBalancer IP)
     k3s-traefik:
@@ -95,10 +94,4 @@ http:
         servers:
           - url: http://192.168.200.240:80
 
-    # The following is currently running on test VMware VM in Razoripper PC
-    rancher:
-      loadBalancer:
-        passHostHeader: true
-        serversTransport: rancher-https
-        servers:
-          - url: "https://192.168.200.91:443"
+

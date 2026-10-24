@@ -20,7 +20,6 @@ http:
           X-Forwarded-Host: "haos.shome"
           X-Forwarded-Port: "443"
 
-
         # Traefik v3 HSTS fields
         stsSeconds: 63072000
         stsIncludeSubdomains: true
@@ -28,3 +27,23 @@ http:
 
     compression:
       compress: {}
+
+    webmin-optiplex-three-host:
+      headers:
+        customRequestHeaders:
+          Host: "webmin-optiplex-three.shome:443"
+
+    webmin-mid-host:
+      headers:
+        customRequestHeaders:
+          Host: "webmin-mid.shome:443"
+
+    webmin-opti-host:
+      headers:
+        customRequestHeaders:
+          Host: "webmin-opti.shome:443"
+
+    webmin-optiplex-two-host:
+      headers:
+        customRequestHeaders:
+          Host: "webmin-optiplex-two.shome:443"
