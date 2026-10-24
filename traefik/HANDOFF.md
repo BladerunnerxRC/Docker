@@ -46,11 +46,20 @@ with a working rollback.
     answered 200/302 except `dockhand` and `wud` (502, backends down).
   - Traefik logs at **DEBUG**. Level token is ` DBG `/` ERR `, so the filter still works;
     DEBUG lines with `error=` don't match.
-- **Dockhand and wud are retired**: their routers/services removed from the repo after the
-  deploy above, to be used as the change for the rollback test (step 7).
+- **Dockhand and wud are retired**: routers/services removed (`6d98cf1`), deployed 14:12 with
+  exit 0; both hosts now 404. That deploy's backup
+  `/opt/netlab-stack/traefik/backups/dynamic-live-2026-10-24-141207.tgz` still has them, so
+  it's the rollback target for step 7.
+- **After that deploy (not yet installed on the server):** scripts moved from `scripts/sbin/`
+  to [`traefik/scripts/`](scripts/), and both now copy their backup to the NAS
+  (`/mnt/backups/traefik-config-scripts`, see README → Backups). `nas_copy` was tested on
+  smiddleware as thomas for: copy OK, copy denied (warns), share not mounted (skips), disabled;
+  none trip the `ERR` trap. **Root writing to the NAS folder is not verified yet**: thomas
+  gets "Permission denied" even though the folders show 0777, so it depends on the Synology
+  NFS squash setting.
 - Changed files:
-  - [`scripts/sbin/edge-sync-traefik-dynamic`](../scripts/sbin/edge-sync-traefik-dynamic) — rewritten
-  - [`scripts/sbin/edge-rollback-traefik-dynamic`](../scripts/sbin/edge-rollback-traefik-dynamic) — fixed
+  - [`traefik/scripts/edge-sync-traefik-dynamic`](scripts/edge-sync-traefik-dynamic) — rewritten
+  - [`traefik/scripts/edge-rollback-traefik-dynamic`](scripts/edge-rollback-traefik-dynamic) — fixed
   - [`README.md`](README.md) — known-issue section removed, steps corrected, install/test section added
   - this file, plus a pointer in the root `CLAUDE.md`
 
@@ -78,7 +87,8 @@ with a working rollback.
 - Unknown `-options` are rejected; root/args checked before touching `/var/log`.
 
 ## Next steps (in order)
-Steps 1–6 are done (see State); continue at step 7.
+Steps 1–6 are done (see State); continue at step 7. Related PRs: the bootstrap-dirs fix and
+the import of the remaining server-only Traefik scripts are separate branches.
 
 1. ~~Commit and push the branch.~~ Done.
 2. ~~Check prerequisites on smiddleware; move `traefik-dynamic-archive.sh` out of the watched
@@ -106,10 +116,24 @@ Steps 1–6 are done (see State); continue at step 7.
 6. Real run: `sudo edge-sync-traefik-dynamic --branch fix-traefik-sync-script`.
    **Exit 30 means the new config IS live and Traefik logged errors about it.** Read the
    printed lines before deciding whether to run the rollback command it prints.
-7. Test rollback using the dockhand/wud removal: dry-run (expect only those `-` lines), deploy
-   (both hosts 502 → 404), `sudo edge-rollback-traefik-dynamic --list`, roll back to the backup
-   that deploy printed (both back to 502), then deploy again (404).
-8. Merge the PR, then reinstall from `main` and run once with no options.
+7. Test rollback with the final scripts (the dockhand/wud deploy is already done):
+   1. Check root can write the NAS folder:
+      `sudo touch /mnt/backups/traefik-config-scripts/.w && sudo rm /mnt/backups/traefik-config-scripts/.w`
+   2. Reinstall both scripts from the branch (README → Install, branch variant; the path is now
+      `traefik/scripts/`).
+   3. `sudo edge-rollback-traefik-dynamic /opt/netlab-stack/traefik/backups/dynamic-live-2026-10-24-141207.tgz`
+      → dockhand/wud back to 502, output has `nas_copy=...dynamic-pre-rollback-*.tgz`.
+   4. `sudo edge-sync-traefik-dynamic --branch fix-traefik-sync-script` → 404 again, output has
+      `nas_copy=...dynamic-live-*.tgz`.
+   (A no-op deploy stops at "Nothing to do" before the backup, so it never tests the NAS copy.)
+8. Merge the PR, then reinstall from `main` and run once with no options. That run also
+   hard-resets `/opt/git/Docker`, which is still on the pre-flatten layout (215 commits behind).
+9. Server cleanup (sudo):
+   - Retire `/opt/netlab-stack/traefik/sync-dynamic.sh`: it deploys from the stale clone's
+     `stacks/edge-stack/traefik/dynamic` (pre-July config), rsyncs straight into live and
+     validates afterwards. Move it to `~/edge-scripts-old-20261024/`.
+   - Copy the backups made before NAS copy existed (`dynamic-live-2026-10-24-140640.tgz`,
+     `...-141207.tgz`) and `~/edge-scripts-old-20261024/` to the NAS folder.
 
 ## Things to verify on the host (assumptions I couldn't test)
 - **Log filter matches real errors.** I assumed Traefik v3 writes errors with ` ERR ` and that
@@ -121,7 +145,7 @@ Steps 1–6 are done (see State); continue at step 7.
   that IP as source (Docker DNAT, no masquerade), so it passes `traefik-ipallow`. If it returns
   403, it's just reported as SKIP; set `API_IP` or drop the feature.
 - **Line endings.** Working tree is CRLF (`core.autocrlf=true`); after `git add`,
-  `git ls-files --eol scripts/sbin` must still show `i/lf`.
+  `git ls-files --eol traefik/scripts` must still show `i/lf`.
 
 ## Open items (not changed, reported only)
 - ~~`rancher` service with undefined `rancher-https` transport~~ and ~~services with no router
@@ -133,5 +157,5 @@ Steps 1–6 are done (see State); continue at step 7.
 - Service with no router: `whoami` (file provider). Harmless.
 - `traefik.yml` (static config) isn't deployed by any script; it's mounted from
   `/opt/netlab-stack/traefik/traefik.yml` and needs a manual copy + restart.
-- Possible follow-up: add `scripts/sbin/*` to CI with `bash -n` + shellcheck, like
+- Possible follow-up: add `traefik/scripts/*` and `scripts/sbin/*` to CI with `bash -n` + shellcheck, like
   `.github/workflows/borg-backup.yml`.

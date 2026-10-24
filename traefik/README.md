@@ -61,8 +61,8 @@ On the server (smiddleware), Traefik consumes the synced dynamic config from:
   acme/             # ACME storage (sensitive; private-ish material)
   certs/            # local cert assets (if used)
   stepca/           # step-ca integration assets (if used)
-  backups/          # tar backups made before each deploy
-  dynamic-archive/  # old backup folders moved out of watched dir
+  backups/          # tar backup made before each deploy (also copied to the NAS)
+  dynamic-archive/  # pre-rollback snapshots + old folders moved out of watched dir
 ```
 
 ### Why `dynamic-archive/` matters
@@ -84,13 +84,13 @@ On the server (smiddleware), Traefik consumes the synced dynamic config from:
 
 ### Installed scripts
 
-These are installed on smiddleware. The copies in `scripts/sbin/` are the source; merging
-does **not** update `/usr/local/sbin`, so install after every change (see
+These are installed on smiddleware. The copies in [`traefik/scripts/`](scripts/) are the
+source; merging does **not** update `/usr/local/sbin`, so install after every change (see
 [Install / update the scripts](#install--update-the-scripts)):
 
 ```text
 /usr/local/sbin/
-  edge-stack-bootstrap-dirs.sh
+  edge-stack-bootstrap-dirs
   edge-sync-traefik-dynamic
   edge-rollback-traefik-dynamic
 ```
@@ -110,7 +110,7 @@ Logs are stored here:
 Creates required directories with owners/permissions:
 
 ```bash
-sudo /usr/local/sbin/edge-stack-bootstrap-dirs.sh
+sudo /usr/local/sbin/edge-stack-bootstrap-dirs
 ```
 
 ### 2) Deploy (standard operation)
@@ -123,7 +123,8 @@ What it does:
 2. Extract `traefik/dynamic/` into a staging folder **outside** the watched folder
 3. Validate YAML in staging — if it fails, live is never touched
 4. Compare live with the repo; stop if they already match (`--dry-run` shows the diff and stops here)
-5. Create tar backup of the current live dynamic config (the run stops if this fails)
+5. Create tar backup of the current live dynamic config (the run stops if this fails),
+   then copy it to the NAS (a failed copy only warns; see [Backups](#backups))
 6. `rsync --delete` staging → live dynamic
 7. Restart Traefik
 8. Wait until Traefik answers HTTPS on `127.0.0.1` (any status, no API or login needed)
@@ -161,6 +162,19 @@ sudo /usr/local/sbin/edge-sync-traefik-dynamic --branch <name> [--dry-run]   # t
 > The request goes to the host's LAN IP (`API_IP` overrides it), because a request to
 > `127.0.0.1` reaches Traefik from a Docker `172.x` address that the allowlist refuses.
 
+### Backups
+
+| Made by | Local copy (used for rollback) | NAS copy |
+|---|---|---|
+| deploy, before applying | `/opt/netlab-stack/traefik/backups/dynamic-live-*.tgz` | `/mnt/backups/traefik-config-scripts/` |
+| rollback, before restoring | `/opt/netlab-stack/traefik/dynamic-archive/dynamic-pre-rollback-*.tgz` | same folder |
+
+`/mnt/backups` is the NFS share `192.168.200.3:/volume1/SYSBAK_borgrepos_smiddleware`; only
+root can write to it. The copy is skipped with a warning if `/mnt/backups` isn't mounted (so an
+unmounted share never fills the local disk) and gives up after 60 s, because the mount is `hard`.
+Override with `NAS_DIR=/other/dir`, or turn it off with `NAS_DIR=`. Nothing prunes old
+backups yet, in either place.
+
 ### Install / update the scripts
 
 Run the **installed** copy, never the one in `/opt/git/Docker`: the sync script resets that
@@ -169,15 +183,15 @@ clone while it runs.
 ```bash
 # from main, after merging
 cd /opt/git/Docker && git pull --ff-only
-sudo install -m 0755 scripts/sbin/edge-sync-traefik-dynamic    /usr/local/sbin/
-sudo install -m 0755 scripts/sbin/edge-rollback-traefik-dynamic /usr/local/sbin/
+sudo install -m 0755 traefik/scripts/edge-sync-traefik-dynamic    /usr/local/sbin/
+sudo install -m 0755 traefik/scripts/edge-rollback-traefik-dynamic /usr/local/sbin/
 
 # from a branch, before merging (doesn't touch the clone's checkout)
 B=fix-traefik-sync-script
 git -C /opt/git/Docker fetch origin "+refs/heads/$B:refs/remotes/origin/$B"
 for s in edge-sync-traefik-dynamic edge-rollback-traefik-dynamic; do
-  git -C /opt/git/Docker show "origin/$B:scripts/sbin/$s" > "/tmp/$s"
-  sudo install -m 0755 "/tmp/$s" /usr/local/sbin/ && rm "/tmp/$s"
+  git -C /opt/git/Docker show "origin/$B:traefik/scripts/$s" > "/tmp/$s"
+  sudo install -m 0755 "/tmp/$s" /usr/local/sbin/ && rm -f "/tmp/$s"
 done
 ```
 

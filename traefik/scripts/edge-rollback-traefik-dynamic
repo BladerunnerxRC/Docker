@@ -8,6 +8,7 @@
 # Key behavior:
 #   - If no backup file provided, uses newest dynamic-live-*.tgz from backups dir
 #   - Archives current live dynamic dir before restoring (REQUIRED - abort if it fails)
+#   - Copies that archive to the NAS (NAS_DIR; best effort, warns if it fails)
 #   - Extracts the backup to a staging folder, then rsync --delete into live, so
 #     files added after the backup are removed (no "ghost" routers)
 #   - Restarts Traefik container
@@ -30,6 +31,10 @@ BASE="/opt/netlab-stack/traefik"
 DST="${BASE}/dynamic"
 BK="${BASE}/backups"
 ARCH="${BASE}/dynamic-archive"
+
+# Same off-host copy as edge-sync-traefik-dynamic; NAS_DIR="" disables it.
+NAS_MOUNT="${NAS_MOUNT:-/mnt/backups}"
+NAS_DIR="${NAS_DIR-${NAS_MOUNT}/traefik-config-scripts}"
 
 TRAEFIK_CONTAINER="${TRAEFIK_CONTAINER:-traefik}"
 WAIT_SECONDS="${WAIT_SECONDS:-25}"
@@ -54,6 +59,18 @@ die()  { err "$*"; exit 1; }
 
 need_root() { [[ "${EUID}" -eq 0 ]] || die "run as root: sudo $0"; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+
+# Never fails the run; timeouts because the NAS mount is "hard".
+nas_copy() {
+  [[ -n "$NAS_DIR" ]] || return 0
+  if ! timeout 10 mountpoint -q "$NAS_MOUNT"; then
+    warn "NAS copy skipped - $NAS_MOUNT is not mounted"
+  elif timeout -k 5 60 cp "$1" "${NAS_DIR}/"; then
+    info "nas_copy=${NAS_DIR}/$(basename "$1")"
+  else
+    warn "NAS copy to $NAS_DIR failed; local archive is $1"
+  fi
+}
 
 on_err() {
   local code=$?
@@ -105,6 +122,8 @@ need flock
 need docker
 need curl
 need jq
+need timeout
+need mountpoint
 
 # Shared with edge-sync-traefik-dynamic so the two never run at once.
 exec 9>"$LOCK_FILE"
@@ -139,6 +158,7 @@ mkdir -p "$ARCH"
 ARCH_TGZ="${ARCH}/dynamic-pre-rollback-$(date +%Y-%m-%d-%H%M%S).tgz"
 tar -czf "$ARCH_TGZ" -C "$(dirname "$DST")" "$(basename "$DST")"
 info "archive_created=$ARCH_TGZ"
+nas_copy "$ARCH_TGZ"
 
 info "[3/7] Restore backup -> $DST (delete files not in the backup)"
 APPLY_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

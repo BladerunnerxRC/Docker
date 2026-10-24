@@ -28,6 +28,7 @@ set -Eeuo pipefail
 #   - Extract repo dynamic/ into a staging folder OUTSIDE the watched folder
 #   - Validate YAML in staging (REQUIRED) - live is untouched if this fails
 #   - Backup live dynamic folder (REQUIRED - abort if the backup fails)
+#   - Copy that backup to the NAS (NAS_DIR; best effort, warns if it fails)
 #   - Rsync staging -> live (delete removed files)
 #   - Restart Traefik, wait until it answers HTTPS
 #   - Fail if Traefik logged file-provider errors since the apply
@@ -43,6 +44,12 @@ SRC_REL="traefik/dynamic"
 BASE="/opt/netlab-stack/traefik"
 DST="${BASE}/dynamic"
 BK="${BASE}/backups"
+
+# Off-host copy of each backup. Best effort: rollback uses the local copy in $BK.
+# NAS_DIR="" disables it. NAS_MOUNT must be a mountpoint, so an unmounted share
+# never fills the local disk.
+NAS_MOUNT="${NAS_MOUNT:-/mnt/backups}"
+NAS_DIR="${NAS_DIR-${NAS_MOUNT}/traefik-config-scripts}"
 
 GIT_USER="${GIT_USER:-thomas}"
 TRAEFIK_CONTAINER="${TRAEFIK_CONTAINER:-traefik}"
@@ -105,6 +112,19 @@ on_err() {
 }
 
 cleanup() { [[ -z "$STAGE" ]] || rm -rf "$STAGE"; }
+
+# Never fails the run: the mount is "hard", so a dead NAS would block forever
+# without the timeouts.
+nas_copy() {
+  [[ -n "$NAS_DIR" ]] || return 0
+  if ! timeout 10 mountpoint -q "$NAS_MOUNT"; then
+    echo "WARN: NAS copy skipped - $NAS_MOUNT is not mounted"
+  elif timeout -k 5 60 cp "$1" "${NAS_DIR}/"; then
+    echo "nas_copy=${NAS_DIR}/$(basename "$1")"
+  else
+    echo "WARN: NAS copy to $NAS_DIR failed; local backup is $1"
+  fi
+}
 
 validate_yaml() {
   # REQUIRED: fail the run if YAML is invalid or there is nothing to deploy
@@ -182,6 +202,8 @@ need docker
 need curl
 need jq
 need python3
+need timeout
+need mountpoint
 
 # Shared with edge-rollback-traefik-dynamic so the two never run at once.
 exec 9>"$LOCK_FILE"
@@ -247,6 +269,7 @@ step "5/9" "Backup live dynamic folder (REQUIRED)"
 BK_TGZ="${BK}/dynamic-live-$(date +%Y-%m-%d-%H%M%S).tgz"
 tar -czf "$BK_TGZ" -C "$(dirname "$DST")" "$(basename "$DST")"
 echo "backup_created=$BK_TGZ"
+nas_copy "$BK_TGZ"
 
 if [[ -d "${DST}/backups" ]]; then
   mv -f "${DST}/backups" "${BASE}/backups-in-dynamic-$(date +%Y%m%d-%H%M%S)"

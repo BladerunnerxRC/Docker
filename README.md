@@ -31,7 +31,7 @@ variables or gitignored `.env` files, never in Git.
 | App | Description |
 | --- | --- |
 | [edge-stack](edge-stack/) | The deployed edge stack on smiddleware: Traefik (pinned), AdGuard Home (LAN DNS) and a whoami test service, captured from the live host. All state is bind-mounted from `/opt/netlab-stack/` on the host. |
-| [traefik](traefik/) | Traefik dynamic config (transports, middlewares, routers, services; TLS via the `stepca` resolver) and the deploy-and-recover workflow that syncs it to the host. Also holds an older edge compose file; the deployed one is in `edge-stack`. |
+| [traefik](traefik/) | Traefik dynamic config (transports, middlewares, routers, services; TLS via the `stepca` resolver) and the deploy-and-recover scripts that sync it to the host ([traefik/scripts](traefik/scripts/)). Also holds an older edge compose file; the deployed one is in `edge-stack`. |
 | [TraefikAdmin](TraefikAdmin/) | Web UI for building Traefik routes without editing YAML, backed by PostgreSQL. Sits beside the edge stack and feeds Traefik over the HTTP provider — it does not run or replace Traefik. |
 | [AdGuard](AdGuard/) | Standalone AdGuard Home network-wide DNS ad/tracker blocker, deployed on a dedicated macvlan interface for DHCP support. |
 | [step-ca](step-ca/) | Smallstep `step-ca` internal certificate authority for issuing LAN TLS certs — [Docker server install](step-ca/Docker_Server_Install/) and [NAS install](step-ca/NAS_Install/) variants. |
@@ -55,7 +55,7 @@ variables or gitignored `.env` files, never in Git.
 
 | Directory | Description |
 | --- | --- |
-| [scripts](scripts/) | Host helper scripts for the edge stack — bootstrap directories, check certificates, and sync or roll back Traefik dynamic config (see [scripts/sbin](scripts/sbin/)). |
+| [scripts](scripts/) | Host helper scripts for the edge stack — bootstrap directories and check certificates (see [scripts/sbin](scripts/sbin/)). The Traefik sync/rollback scripts are in [traefik/scripts](traefik/scripts/). |
 
 ## Other
 
