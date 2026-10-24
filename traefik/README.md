@@ -227,6 +227,20 @@ Rollback to a specific file:
 sudo /usr/local/sbin/edge-rollback-traefik-dynamic /opt/netlab-stack/traefik/backups/dynamic-live-YYYY-MM-DD-HHMMSS.tgz
 ```
 
+### All Traefik scripts
+
+Every script used for this process is in [`traefik/scripts/`](scripts/):
+
+| Script | Installed at (smiddleware) | Use |
+|---|---|---|
+| [`edge-sync-traefik-dynamic`](scripts/edge-sync-traefik-dynamic) | `/usr/local/sbin/` | Deploy (above) |
+| [`edge-rollback-traefik-dynamic`](scripts/edge-rollback-traefik-dynamic) | `/usr/local/sbin/` | Recover (above) |
+| [`traefik-dynamic-archive.sh`](scripts/traefik-dynamic-archive.sh) | `/usr/local/sbin/` | Manual snapshot: `sudo traefik-dynamic-archive.sh` writes `dynamic-archive/dynamic-pre-restore-<ts>.tgz` (the `*.yml` only). Not needed for deploy/rollback, which make their own backups. Lived inside `dynamic/` until 2026-10-24. |
+| [`legacy/sync-dynamic.sh`](scripts/legacy/sync-dynamic.sh) | was `/opt/netlab-stack/traefik/` | **Retired**, reference only; exits at once. It synced from the pre-flatten path and validated after going live. |
+
+`edge-stack-bootstrap-dirs` (directory setup) and `edge-cert-check` (daily cert check, not
+installed yet) are edge-stack-wide and stay in [`scripts/sbin/`](../scripts/sbin/).
+
 ---
 
 ## Verification Cheatsheet
