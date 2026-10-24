@@ -36,8 +36,18 @@ with a working rollback.
     owned by thomas (on `main`, behind origin, irrelevant since the script reads `origin/<branch>`);
     live `dynamic/` is `thomas:thomas 0755`; Traefik `v3.7.10`.
   - Step 4 baseline: **zero** `level=error`/` ERR ` lines in 48 h (container up 2 days).
-  - `/usr/local/sbin/edge-*-traefik-dynamic` are still the **old** versions (Dec 2025); the old
-    sync ignores `--dry-run` and would do a real deploy.
+- **2026-10-24 on smiddleware, steps 2–6 done:**
+  - `traefik-dynamic-archive.sh` moved out of the watched folder to `/usr/local/sbin/`.
+  - Branch scripts installed in `/usr/local/sbin` (md5 matches the branch); old ones kept in
+    `~/edge-scripts-old-20261024/`.
+  - Dry run behaved: whole-file diffs only from CRLF→LF, no staging dir left, clone untouched.
+  - Real run of `78d7fab`: exit 0, Traefik up after 2 s, no log errors. Backup
+    `/opt/netlab-stack/traefik/backups/dynamic-live-2026-10-24-140640.tgz`. All routes
+    answered 200/302 except `dockhand` and `wud` (502, backends down).
+  - Traefik logs at **DEBUG**. Level token is ` DBG `/` ERR `, so the filter still works;
+    DEBUG lines with `error=` don't match.
+- **Dockhand and wud are retired**: their routers/services removed from the repo after the
+  deploy above, to be used as the change for the rollback test (step 7).
 - Changed files:
   - [`scripts/sbin/edge-sync-traefik-dynamic`](../scripts/sbin/edge-sync-traefik-dynamic) — rewritten
   - [`scripts/sbin/edge-rollback-traefik-dynamic`](../scripts/sbin/edge-rollback-traefik-dynamic) — fixed
@@ -68,11 +78,11 @@ with a working rollback.
 - Unknown `-options` are rejected; root/args checked before touching `/var/log`.
 
 ## Next steps (in order)
+Steps 1–6 are done (see State); continue at step 7.
+
 1. ~~Commit and push the branch.~~ Done.
-2. ~~Check prerequisites on smiddleware.~~ Done 2026-10-24, all OK (see State).
-   **Still to do:** move `/opt/netlab-stack/traefik/dynamic/traefik-dynamic-archive.sh`
-   (root-owned, not in the repo) out of the watched folder, e.g. to `/usr/local/sbin/`, or the
-   first real sync's `rsync --delete` will delete it. Needs sudo.
+2. ~~Check prerequisites on smiddleware; move `traefik-dynamic-archive.sh` out of the watched
+   folder.~~ Done 2026-10-24.
 3. Install the **branch** copies into `/usr/local/sbin` (README → "Install / update the scripts",
    branch variant). Keep a copy of the old ones first:
    `sudo cp /usr/local/sbin/edge-*-traefik-dynamic ~/`.
@@ -96,8 +106,9 @@ with a working rollback.
 6. Real run: `sudo edge-sync-traefik-dynamic --branch fix-traefik-sync-script`.
    **Exit 30 means the new config IS live and Traefik logged errors about it.** Read the
    printed lines before deciding whether to run the rollback command it prints.
-7. Test rollback: `sudo edge-rollback-traefik-dynamic --list`, then roll back to the backup from
-   step 6, then deploy again.
+7. Test rollback using the dockhand/wud removal: dry-run (expect only those `-` lines), deploy
+   (both hosts 502 → 404), `sudo edge-rollback-traefik-dynamic --list`, roll back to the backup
+   that deploy printed (both back to 502), then deploy again (404).
 8. Merge the PR, then reinstall from `main` and run once with no options.
 
 ## Things to verify on the host (assumptions I couldn't test)

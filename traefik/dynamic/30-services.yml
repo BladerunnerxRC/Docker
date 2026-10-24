@@ -1,10 +1,5 @@
 http:
   services:
-    dockhand:
-      loadBalancer:
-        passHostHeader: true
-        servers:
-          - url: "http://192.168.200.98:3333"
     haos:
       loadBalancer:
         passHostHeader: true
@@ -52,12 +47,6 @@ http:
         passHostHeader: true
         servers:
           - url: "http://192.168.200.98:80"
-
-    wud:
-      loadBalancer:
-        passHostHeader: true
-        servers:
-          - url: "http://192.168.200.14:3001"
 
     webmin-mid:
       loadBalancer:

@@ -1,13 +1,5 @@
 http:
   routers:
-    dockhand:
-      rule: "Host(`dockhand.shome`)"
-      entryPoints: ["websecure"]
-      tls:
-        certResolver: stepca
-      middlewares: ["security-headers", "compression"]
-      service: dockhand
-
     haos:
       rule: "Host(`haos.shome`)"
       entryPoints: ["websecure"]
@@ -98,14 +90,6 @@ http:
         certResolver: stepca
       middlewares: ["security-headers", "compression"]
       service: borg-optiplex-docker
-
-    wud:
-      rule: "Host(`wud.shome`)"
-      entryPoints: ["websecure"]
-      tls:
-        certResolver: stepca
-      middlewares: ["security-headers", "compression"]
-      service: wud
 
     k3s-catchall:
       rule: "HostRegexp(`{name:[a-z0-9-]+}.shome`)"
