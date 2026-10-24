@@ -88,7 +88,10 @@ with a working rollback.
    warning instead of failing, before step 6.
 5. `sudo edge-sync-traefik-dynamic --dry-run --branch fix-traefik-sync-script`
    **Read the diff carefully.** The Oct 5 hand edits are already in the repo, so expect only
-   blank-line changes plus `deleting traefik-dynamic-archive.sh` if step 2's move wasn't done.
+   `deleting traefik-dynamic-archive.sh` if step 2's move wasn't done, plus
+   `10-middlewares.yml`, `20-routers.yml`, `30-services.yml` showing as changed: live has
+   **CRLF** line endings (edited from Windows), the repo has LF. Content is otherwise identical
+   (checked 2026-10-24 with `diff --strip-trailing-cr`), so the deploy just normalises them to LF.
    Any real `-` line means live changed again since 2026-10-24: copy it into the repo first.
 6. Real run: `sudo edge-sync-traefik-dynamic --branch fix-traefik-sync-script`.
    **Exit 30 means the new config IS live and Traefik logged errors about it.** Read the
