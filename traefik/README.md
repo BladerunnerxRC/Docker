@@ -237,6 +237,7 @@ Every script used for this process is in [`traefik/scripts/`](scripts/):
 | [`edge-rollback-traefik-dynamic`](scripts/edge-rollback-traefik-dynamic) | `/usr/local/sbin/` | Recover (above) |
 | [`traefik-dynamic-archive.sh`](scripts/traefik-dynamic-archive.sh) | `/usr/local/sbin/` | Manual snapshot: `sudo traefik-dynamic-archive.sh` writes `dynamic-archive/dynamic-pre-restore-<ts>.tgz` (the `*.yml` only). Not needed for deploy/rollback, which make their own backups. Lived inside `dynamic/` until 2026-10-24. |
 | [`legacy/sync-dynamic.sh`](scripts/legacy/sync-dynamic.sh) | was `/opt/netlab-stack/traefik/` | **Retired**, reference only; exits at once. It synced from the pre-flatten path and validated after going live. |
+| [`legacy/mkcert-traefik-refresh.sh`](scripts/legacy/mkcert-traefik-refresh.sh) | `/opt/netlab-stack/traefik/certs/` (root, 0700) | **Unused**, reference only. Reissued the mkcert `shome.pem` (`*.shome` + names), then restarted Traefik. Last run 2025-12-12; nothing loads `shome.pem` now, since TLS comes from the `stepca` resolver. Server copy left in place. |
 
 `edge-stack-bootstrap-dirs` (directory setup) and `edge-cert-check` (daily cert check, not
 installed yet) are edge-stack-wide and stay in [`scripts/sbin/`](../scripts/sbin/).
