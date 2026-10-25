@@ -1,6 +1,6 @@
 # Checkmk Deployment — Session Handoff
 
-> Last updated 2026-10-23 (CPU-starvation fix, router interfaces, failed-unit cleanup). Read this first, then continue from "Next steps".
+> Last updated 2026-10-25 (optiplex-three NTP flapping diagnosed, temperature levels). Previous: 2026-10-23 (CPU-starvation fix, router interfaces, failed-unit cleanup). Read this first, then continue from "Next steps".
 > This file merges the former branches `checkmk-handoff-update` (2026-10-12/13) and `dev-checkmk-onboarding-docs` (2026-10-14/20).
 > Host addresses, hardware specs, SNMP communities and other environment details live in the gitignored
 > `HANDOFF-POC.local.md` next to this file (local only — not in the public repo).
@@ -104,6 +104,7 @@ Topology result: `sw-t2600g → <docker node> → stack-<stack> → containers`.
 | Network interfaces and switch ports (planned) | Error levels 25 % / 50 %, averaged 15 min | host `router`, service `Interface wifi` |
 | Disabled services — *Router: hide loop/flash disks and virtual Wi-Fi* | loop / mtdblock / mmcblk0p* / `Interface wlan` / `Interface bwlan` / `Interface lo$` / `Interface wifi0..2` | host `router` |
 | Periodic service discovery | every **24 h** | (existing rule, edited 2026-10-22) |
+| State of NTP time synchronization (planned 2026-10-25, not yet confirmed created) | Time without sync: WARN **1 h** / CRIT **2 h**; offset + stratum left at defaults | host `optiplex-three` (or all chrony hosts) |
 
 ### Router (Synology RT6600ax, SRM) interfaces
 Mapped 2026-10-22/23 over SNMP; MACs, subnets and the full interface table are in the local file.
@@ -202,6 +203,10 @@ Mapped 2026-10-22/23 over SNMP; MACs, subnets and the full interface table are i
 4. **optiplex-three `smartmontools` diagnosed:** smartd exits 17 "No devices to monitor" because the only disk is eMMC (`mmcblk0`, no SMART). Fix: `sudo systemctl disable --now smartmontools && sudo systemctl reset-failed smartmontools` (not yet confirmed run), or NVMe migration (open items).
 5. **Site alias** set to "Smith LAN".
 
+## Diagnosed (2026-10-25)
+1. **optiplex-three `NTP Time` flapping** (FLAPPINGSTART several times a day). Not the offset: max 3.16 ms over 35 days vs 200/500 ms levels. Every WARN is *Time since last sync* at 17 min 15–41 s against **warn 17 min 5 s / crit 1 h**. chrony backs off to `maxpoll 10` = 1024 s (17 min 4 s), so before each poll the age crosses 17:05 by a few seconds of jitter, then resets to ~1 min → OK. One WARN/OK pair per poll cycle; the clock is fine. The service has only one source (`ntp.ubuntu.com`, 91.189.91.112). Fix: the NTP rule in "Rules" above (no rule existed; defaults in use). **Unverified assumption:** the 17:05 WARN is the check raising the default 5 min *alert delay* to poll interval + 1 s (CRIT 1 h = default). If the summary still shows `17 minutes 5 seconds` after the rule, the check forces it and the alternative is `maxpoll 9` in chrony.conf.
+2. **optiplex-three `Temperature Zone 1` went straight to CRIT at 50 °C:** WARN and CRIT are both 50 °C, so it never WARNs, and 50 °C is low for a CPU/SoC zone under load. Raise to ~70/80 °C (ruleset *Temperature*, condition host `optiplex-three`, service `Zone 1`).
+
 ## Gotchas learned
 1. **TZ with `_` crash-loops the container.** Checkmk 2.5.0 `docker-entrypoint.sh` runs `sed -i -E "s_^TZ=.*_TZ=\"${TZ}\"_"` on every start after the first; the `_` in `America/New_York` breaks the expression, `set -e` exits, `restart: unless-stopped` loops. First boot works, so it only shows on redeploy. Upstream bug — could be reported.
 2. **`CMK_PASSWORD` is read once**, at site creation. Changing it later does nothing; use `docker exec -it checkmk su - cmk -c "cmk-passwd cmkadmin"`.
@@ -223,6 +228,7 @@ Mapped 2026-10-22/23 over SNMP; MACs, subnets and the full interface table are i
 18. **Interface grouping membership comes from the rule's *Conditions for this rule to apply*,** not a per-group regex. One rule per group; **Add pattern** adds another group with the same members. Clone the single-interface settings exactly, or other interfaces change names.
 19. **Disabled-services patterns are regex prefix matches.** Anchor with `$` where needed (`Interface eth1$` vs `eth1.111`); a group name with a space (`Interface wifi 2.4G`) doesn't match `Interface wifi0`.
 20. **`apt remove` leaves SysV init scripts behind**, which systemd turns into "LSB: …" units that fail at boot. `apt purge` the package (state `rc` in `dpkg -l`).
+21. **Flapping: read the event history before touching flap detection.** *Monitor → host → Events of hosts & services* shows the output of each non-OK state. Here it was a threshold sitting 1 s above chrony's poll interval, not a real fault. `Current check attempt 1/1` means one bad result = hard state change; *Maximum number of check attempts* (e.g. 3) damps short blips.
 
 ## Useful commands
 ```bash
@@ -286,6 +292,8 @@ Removed from K3s early (it had 22 alert rules but **no alert transports** — it
 - **`Optical-Network-Terminal` PING UNKN** (`check_icmp: No hosts to check`): the host has no resolvable IP. Set its IPv4 address in the host properties.
 - **`RT2600AC-Loft` Check_MK Discovery CRIT** (`requires a datasource but none configured`): set agent to *No API integrations, no Checkmk agent* and SNMP v2c (or ping only). See gotcha 4.
 - **optiplex-three:**
+  - **NTP rule:** create/confirm the *State of NTP time synchronization* rule (Diagnosed 2026-10-25), activate, then check the `NTP Time` summary reads `warn/crit at 1 hour 0 minutes/2 hours 0 minutes` and no new FLAPPINGSTART appears. Optional: add more chrony sources (e.g. `pool 2.ubuntu.pool.ntp.org iburst` or a local NAS/router).
+  - **Temperature Zone 1** levels 50/50 °C → ~70/80 °C (Diagnosed 2026-10-25).
   - `smartmontools`: run the disable fix above (or let the NVMe migration solve it).
   - **Migrate off the eMMC.** Earlier plan: install an NVMe and clone the eMMC to it; then smartd starts on its own and `smart_posix` can be installed. Check the free M.2 slot first (needs M-key; if only the Wi-Fi slot is free, the A+E-key Ethernet adapter in it must come out). Until migrated, an eMMC wear local check (`mmc extcsd read /dev/mmcblk0`: Life Time Estimation A/B, Pre-EOL) is worth adding.
   - **Cordoned** (`Ready,SchedulingDisabled`) — predates these sessions. Confirm intentional, else `kubectl uncordon optiplex-three`.
