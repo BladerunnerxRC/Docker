@@ -1,0 +1,108 @@
+# Text-search configuration for the pinned image in docker-compose.yml.
+# Copy into the config volume using README.md; a Git pull does not deploy it.
+# Keep credentials in the stack environment or the private deployed copy.
+use_default_settings:
+  engines:
+    keep_only:
+      - brave
+      - duckduckgo
+      - mojeek
+      - mwmbl
+      - searchmysite
+      - wiby
+      - marginalia
+      - wikipedia
+      - github
+      - stackoverflow
+      - arch linux wiki
+      - hackernews
+      - arxiv
+      - semantic scholar
+      - pubmed
+      - openalex
+      - crossref
+
+search:
+  formats: [html, json]
+  # Retain the instance's existing unfiltered research setting. Clients can
+  # request safesearch=1 or 2 on engines that support it.
+  safe_search: 0
+  default_lang: en
+  autocomplete: ""
+
+server:
+  # The Compose environment supplies secret_key, base_url, limiter, and Valkey.
+  # SEARXNG_SECRET remains required by Compose; never commit it here.
+  public_instance: false
+
+outgoing:
+  request_timeout: 5.0
+  max_request_timeout: 10.0
+  # Inherit upstream connection pooling, TLS verification, and error backoff.
+
+categories_as_tabs:
+  general:
+  discovery:
+  it:
+  science:
+
+engines:
+  # Broad coverage for normal searches.
+  - name: brave
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+
+  # Also participate in general searches. The discovery category lets an MCP
+  # client query these sources separately without broad-engine results.
+  - name: mojeek
+    disabled: false
+    categories: [general, discovery, web]
+  - name: mwmbl
+    disabled: false
+    categories: [general, discovery]
+  - name: searchmysite
+    disabled: false
+    categories: [general, discovery, blogs]
+  - name: wiby
+    disabled: false
+    categories: [general, discovery, blogs]
+
+  # Optional: obtain a personal API key, then set inactive/disabled to false
+  # and add api_key ONLY in the private deployed settings.yml. See README.md.
+  - name: marginalia
+    inactive: true
+    disabled: true
+    categories: [general, discovery, blogs]
+
+  - name: wikipedia
+    disabled: false
+    # Include ordinary results for MCP bridges that only read results[].
+    display_type: [list, infobox]
+
+  # These engines keep their upstream it/science categories. They are queried
+  # only when the client selects that category or explicitly names the engine.
+  - name: github
+    disabled: false
+  - name: stackoverflow
+    disabled: false
+  - name: arch linux wiki
+    disabled: false
+  - name: hackernews
+    disabled: false
+  - name: arxiv
+    disabled: false
+    timeout: 8.0
+  - name: semantic scholar
+    disabled: false
+    timeout: 8.0
+  - name: pubmed
+    disabled: false
+    timeout: 8.0
+  - name: openalex
+    disabled: false
+    timeout: 8.0
+  - name: crossref
+    disabled: false
+    # Upstream defaults to 30 seconds; keep this within our research budget.
+    timeout: 8.0
