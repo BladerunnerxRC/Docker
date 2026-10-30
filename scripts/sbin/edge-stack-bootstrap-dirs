@@ -1,6 +1,21 @@
-sudo tee /usr/local/sbin/edge-stack-bootstrap-dirs.sh >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# edge-stack-bootstrap-dirs
+#
+# One-time setup for the edge stack on smiddleware: creates /opt/git,
+# /opt/netlab-stack/{traefik,adguard}/... and /var/log/edge-sync with the
+# owners/modes below, and adds APP_USER to the docker group.
+#
+# Install (from the repo root of the clone):
+#   sudo install -m 0755 scripts/sbin/edge-stack-bootstrap-dirs /usr/local/sbin/
+# Run:
+#   sudo edge-stack-bootstrap-dirs
+#
+# Re-running on a live host applies chown -R / chmod -R to those folders again
+# (e.g. every file under traefik/dynamic becomes 0775).
+# -----------------------------------------------------------------------------
 
 # -------------------------
 # Config (edit if needed)
@@ -128,6 +143,3 @@ echo "Traefik archive:    ${TRAEFIK_BASE}/dynamic-archive (owner: ${APP_USER}:${
 echo "AdGuard bind dirs:  ${ADGUARD_BASE}/{conf,work} (owner: ${APP_USER}:${APP_GROUP}, 0770)"
 echo "Logs:               $LOG_DIR (root:root, 0755; log files 0644)"
 echo "DONE."
-EOF
-
-sudo chmod +x /usr/local/sbin/edge-stack-bootstrap-dirs.sh
