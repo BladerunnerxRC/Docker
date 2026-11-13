@@ -41,6 +41,7 @@ variables or gitignored `.env` files, never in Git.
 | App | Description |
 | --- | --- |
 | [checkmk](checkmk/) | Checkmk Community 2.5 monitoring server on optiplex-two (web UI on port 8081, agent receiver on 8000), deployed as a Portainer GitOps stack. Deployment state and next steps: [HANDOFF-POC.md](checkmk/HANDOFF-POC.md). |
+| [optiplex-docker-migration](optiplex-docker-migration/) | Plan to move optiplex-docker (K3s control plane, Portainer EE, Borg UI, Tailscale router) onto an OptiPlex 3000 Micro by whole-disk clone, keeping its hostname and IP: [PLAN.md](optiplex-docker-migration/PLAN.md). |
 | [portainer-agent](portainer-agent/) | Portainer agent compose template, pinned to the Portainer server's version, plus a sync script that redeploys it on each Docker host while keeping that host's LAN IP binding. |
 
 ## Backup & sync
