@@ -192,6 +192,7 @@ The compose file currently uses these host paths:
 | `/mnt/backups/borgrepo` | `/local/shared` | `rw` | Shared Borg repo |
 | `/mnt/borg_smiddleware` | `/local/smiddleware` | `rw` | Smiddleware Borg repo |
 | `/mnt/borg_optiplex-two` | `/local/optiplex-two` | `rw` | Optiplex-two Borg repo |
+| `/mnt/borg_optiplex-three` | `/local/optiplex-three` | `rw` | Optiplex-three Borg repo |
 | `/srv/borg-restore` | `/restore` | `rw` | Restore staging area |
 | `/var/log/borg` | `/logs` | `ro` | Borg job logs |
 | `/srv/borg-ui-config-export` | `/local/borgui-config-export` | `rw` | Borg UI config export snapshots (see `BORG_UI-borgui-config-export-snapshot.sh`) |
@@ -305,6 +306,12 @@ Example cron flow:
   - Borg UI creates the repo directory itself, so it checks that the repo path's *parent* is writable. `/local` is a root-owned directory baked into the container image, so a repo path directly under it (e.g. `/local/optiplex-two`) always fails this check — even when that path is a writable mount.
   - Fix: set the repo path one level below the mount, e.g. `/local/optiplex-two/borg-repo-optiplex-two`. The parent is then the writable host mount, and the repo lands on the host at `/mnt/borg_optiplex-two/borg-repo-optiplex-two`.
   - Also confirm the container was recreated after adding the volume line (`docker compose -f docker_compose.yml up -d`) and the host directory is writable by the container user (`PUID`/`PGID` = `1024`/`100`).
+- `listing archives failed (exit code 13): Repository ... does not exist` (worked before, nothing changed in Borg UI):
+  - Cause: the repo's NFS share on the host didn't mount. The `/mnt/borg_*` and `/mnt/backups` fstab lines use `nofail`, so if the NAS (or an encrypted/locked Synology shared folder) isn't reachable at boot, systemd times out after ~90s, boot continues, and the container binds the empty local directory underneath. Confirm with `findmnt /mnt/borg_<name>` (no output = not mounted) and `sudo journalctl -b -u 'mnt-*' | grep -i timed`.
+  - **Do not re-initialize the repo in Borg UI** — that creates a new empty repo on the local disk that the real share later hides.
+  - Recover: `docker stop borg-backup`, fix the NAS side (unlock the shared folder / check its NFS permissions), `sudo mount -a -t nfs4`, check the repo dir contains `config` + `data/`, then `docker compose -f docker_compose.yml up -d --force-recreate borg-ui`.
+  - The `/mnt/borg_*` repo volumes (`smiddleware`, `optiplex-two`, `optiplex-three`) use `rslave` propagation, so once the container has been recreated with it, a later remount of those shares appears inside the container without another recreate. `/local/shared` can't benefit (its source `/mnt/backups/borgrepo` is a subdirectory *below* the `/mnt/backups` mount point), so it always needs the recreate. Propagation requires `findmnt -o TARGET,PROPAGATION /` to show `shared` (systemd default) and a non-snap Docker install.
+  - Optional host hardening: add `x-systemd.automount` to the NFS fstab options (e.g. `rw,vers=4.1,hard,timeo=600,retrans=2,_netdev,nofail,x-systemd.automount`) so the share is mounted on first access instead of once at boot, then `sudo systemctl daemon-reload`.
 - Backup source or repo path errors:
   - Validate host directories exist and are mounted as expected.
 - Snapshot script failures:

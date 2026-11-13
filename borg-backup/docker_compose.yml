@@ -24,9 +24,16 @@ services:
       - /srv/borg-source:/source/data:ro
       - /opt/borg-ui-empty:/source/empty:ro
 
+      # Repo mounts are NFS shares on the host (nofail). `rslave` lets an NFS
+      # mount that lands on the bind source AFTER the container started (e.g. a
+      # share that timed out at boot and was remounted) show up inside the
+      # container without a recreate. It does not help /local/shared: its source
+      # is a subdirectory of the /mnt/backups mount point, so that one still
+      # needs `up -d --force-recreate` after a remount.
       - /mnt/backups/borgrepo:/local/shared:rw
-      - /mnt/borg_smiddleware:/local/smiddleware:rw
-      - /mnt/borg_optiplex-two:/local/optiplex-two:rw
+      - /mnt/borg_smiddleware:/local/smiddleware:rw,rslave
+      - /mnt/borg_optiplex-two:/local/optiplex-two:rw,rslave
+      - /mnt/borg_optiplex-three:/local/optiplex-three:rw,rslave
 
       - /srv/borg-restore:/restore:rw
 
