@@ -645,6 +645,12 @@ Example cron flow:
   - It depends on `redis` being healthy first — check `docker compose -f docker_compose.yml logs redis`.
 - `mkdir: cannot create directory '/home/borg': Permission denied` on startup:
   - The entrypoint needs its full default capability set (running as root) to prepare `/home/borg` before dropping to the configured `PUID`/`PGID`. Don't add `cap_drop: ALL` to this service.
+- `listing archives failed (exit code 13): Repository ... does not exist` (worked before, nothing changed in Borg UI):
+  - Cause: the repo's NFS share on the host didn't mount. The `/mnt/borg_*` and `/mnt/backups` fstab lines use `nofail`, so if the NAS (or an encrypted/locked Synology shared folder) isn't reachable at boot, systemd times out after ~90s, boot continues, and the container binds the empty local directory underneath. Confirm with `findmnt /mnt/borg_<name>` (no output = not mounted) and `sudo journalctl -b -u 'mnt-*' | grep -i timed`.
+  - **Do not re-initialize the repo in Borg UI** — that creates a new empty repo on the local disk that the real share later hides.
+  - Recover: `docker stop borg-backup`, fix the NAS side (unlock the shared folder / check its NFS permissions), `sudo mount -a -t nfs4`, check the repo dir contains `config` + `data/`, then `docker compose -f docker_compose.yml up -d --force-recreate borg-ui`.
+  - The `/mnt/borg_*` repo volumes (`smiddleware`, `optiplex-two`, `optiplex-three`) use `rslave` propagation, so once the container has been recreated with it, a later remount of those shares appears inside the container without another recreate. `/local/shared` can't benefit (its source `/mnt/backups/borgrepo` is a subdirectory *below* the `/mnt/backups` mount point), so it always needs the recreate. Propagation requires `findmnt -o TARGET,PROPAGATION /` to show `shared` (systemd default) and a non-snap Docker install.
+  - Optional host hardening: add `x-systemd.automount` to the NFS fstab options (e.g. `rw,vers=4.1,hard,timeo=600,retrans=2,_netdev,nofail,x-systemd.automount`) so the share is mounted on first access instead of once at boot, then `sudo systemctl daemon-reload`.
 - Backup source or repo path errors:
   - Validate host directories exist and are mounted as expected.
 - Snapshot script failures:
