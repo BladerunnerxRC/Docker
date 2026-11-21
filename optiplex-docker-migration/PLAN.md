@@ -1,12 +1,23 @@
-# optiplex-docker → OptiPlex 3000 Micro — Migration Plan
+# optiplex-docker — Hardware Replacement Plan
 
-> Drafted 2026-11-13. Status: **planned, not started.** Nothing below has been run yet.
+> Drafted 2026-11-13, made hardware-neutral 2026-11-20. Status: **planned, no replacement box yet.**
+> Nothing below has been run. Phase 2 (safety net) is worth doing now, before any hardware arrives.
 > Tick the boxes as you go and record anything surprising under "Log".
 
 ## Goal
-Move everything that runs on optiplex-docker (Celeron N5105, 4C/4T, 14 GiB) onto a
-Dell OptiPlex 3000 Micro (i5-12500T, 6C/12T, 16 GB DDR4, 512 GB SSD) with as little
-change to the rest of the lab as possible.
+Move everything that runs on optiplex-docker (Celeron N5105, 4C/4T, 14 GiB) onto faster
+replacement hardware with as little change to the rest of the lab as possible.
+
+## Replacement box: what to look for
+- [ ] **UEFI boot** (any Intel 6th gen or newer business mini PC qualifies).
+- [ ] **CPU clearly faster than the N5105** (~4k PassMark multi-core, no AVX). Rough guide:
+  i5-8500T/9500T 6C/6T ~7.5–8k (≈2x) · i5-10500T 6C/12T ~9–10k (≈2.3x) · i5-12400T/12500T 6C/12T ~17k (≈4x).
+- [ ] **≥16 GB RAM** (two SODIMM slots preferred, for dual channel), **NVMe slot**, **≥256 GB** (current LV is 232 GB).
+- [ ] Wired gigabit Ethernet.
+- Typical models: Dell OptiPlex Micro (x070 or newer), Lenovo ThinkCentre Tiny (M720q/M920q or newer),
+  HP EliteDesk/ProDesk Mini (G4 or newer).
+
+Chosen box: _(model, CPU, RAM, disk, NIC MAC — fill in when bought)_
 
 ## Governing rule: keep the identity
 The new box takes over hostname **`optiplex-docker`** and IP **`192.168.200.98`**. That address
@@ -38,7 +49,7 @@ A fresh install is the fallback only if Phase 0 says the clone can't boot.
 
 ## Phase 0 — Pre-checks on optiplex-docker (decide clone vs rebuild)
 
-- [ ] Boot mode — must print `UEFI` for the clone to boot on the 12th-gen OptiPlex:
+- [ ] Boot mode — must print `UEFI` for the clone to boot (newer business minis often have no legacy BIOS boot):
   ```bash
   [ -d /sys/firmware/efi ] && echo UEFI || echo BIOS
   ```
@@ -54,14 +65,14 @@ A fresh install is the fallback only if Phase 0 says the clone can't boot.
 
 If boot mode is `BIOS`: stop and write a rebuild plan instead.
 
-## Phase 1 — Prepare the new box (while Windows is still on it)
+## Phase 1 — Prepare the new box (while its shipped OS is still on it)
 
-- [ ] BIOS/firmware update via Dell Command Update. The Windows key is embedded in firmware, so Windows can be reinstalled later.
-- [ ] BIOS: storage mode **AHCI/NVMe** (not "RAID On" — Linux won't see the SSD).
-- [ ] BIOS: AC recovery **Power On**; Wake-on-LAN enabled.
+- [ ] BIOS/firmware update with the vendor tool (Dell Command Update, Lenovo Vantage / System Update, HP Support Assistant) — easiest from the shipped Windows. A Windows OEM key is embedded in firmware, so Windows can be reinstalled later.
+- [ ] BIOS: storage mode **AHCI/NVMe** (not "RAID On" / Intel RST — Linux won't see the SSD).
+- [ ] BIOS: after power loss **Power On**; Wake-on-LAN enabled.
 - [ ] Memory test (Ubuntu ISO → memtest86+) before trusting it with the control plane.
 - [ ] Note the new NIC's MAC address.
-- [ ] Optional: add a second matching DDR4 SODIMM if it shipped with one 16 GB stick (dual channel, 32 GB).
+- [ ] Optional: if it shipped with a single RAM stick, add a matching one for dual channel.
 
 ## Phase 2 — Safety net (do this even if the migration slips)
 
@@ -83,15 +94,15 @@ If boot mode is `BIOS`: stop and write a rebuild plan instead.
 
 ## Phase 4 — First boot on the new box
 
-- [ ] If it won't boot: Dell BIOS → Boot Sequence → Add Boot Option → `\EFI\ubuntu\shimx64.efi`.
+- [ ] If it won't boot: in the firmware setup, add a UEFI boot entry for `\EFI\ubuntu\shimx64.efi` (Dell: Boot Sequence → Add Boot Option; Lenovo/HP have the equivalent).
 - [ ] Network (most likely breakage): fix the netplan interface name / MAC match, `sudo netplan apply`. If .98 is a DHCP reservation, move it to the new MAC in SRM.
-- [ ] Grow the disk to 512 GB:
+- [ ] If the new disk is larger, grow into it:
   ```bash
   sudo growpart /dev/nvme0n1 3      # check the partition number with lsblk first
   sudo pvresize /dev/nvme0n1p3
   sudo lvextend -r -l +100%FREE /dev/ubuntu-vg/ubuntu-lv
   ```
-- [ ] Re-tune kubelet reservations in `/etc/rancher/k3s/config.yaml` for 12 threads (Docker workloads aren't counted by K3s; consider `system-reserved cpu=2000m`), then `sudo systemctl restart k3s`.
+- [ ] Re-tune kubelet reservations in `/etc/rancher/k3s/config.yaml` for the new core/thread count and RAM (Docker workloads aren't counted by K3s, so reserve generously — e.g. `system-reserved cpu=2000m` on a 12-thread box), then `sudo systemctl restart k3s`.
 - [ ] Don't install `iptables-persistent` (Checkmk HANDOFF gotcha 17).
 
 ## Phase 5 — Verify
