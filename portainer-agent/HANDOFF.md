@@ -50,8 +50,8 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
 
 | Host | Directory | Agent | State / blocker |
 |---|---|---|---|
-| optiplex-three | `~/portainer-agent` | 2.45.2 (synced 2026-10-16) | Needs a re-sync to 2.45.3. Port binding is bare `9001:9001` (listens on every interface). `.env` still has the unused `AGENT_VERSION=` line. |
-| smiddleware | `~/portainer-agent` (compose copied from old dir 2026-10-23) | 2.45.2 — shown as **Outdated** in Portainer | Sync stopped: `.env` had `PORTAINER_SERVER` pointing at optiplex-two over `https:9443`, which isn't published. Fix to the HTTP URL, re-run. Old dir still present. |
+| optiplex-three | `~/portainer-agent` | 2.45.3 (checked 2026-11-22); its server runs 2.45.4 | Sync after PR #41 merges. Port binding may still be bare `9001:9001`. `.env` may still have the unused `AGENT_VERSION=` line (harmless). |
+| smiddleware | `~/portainer-agent` | 2.45.3, LAN-IP binding (checked 2026-11-22); its server runs 2.45.4 | Sync after PR #41 merges. `PORTAINER_SERVER` (HTTP URL) works. Check whether the old directory is still there. |
 | optiplex-two | n/a | — | Server host; its own endpoint uses the local socket, no agent needed for its own server. |
 | optiplex-docker | n/a | — | Server host. Unknown whether it runs an agent for the other server. |
 
@@ -79,11 +79,12 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
 - **Compose filename is `.yml`** (template renamed from `.yaml` to match the script and hosts).
 
 ## Next steps
-1. **smiddleware:** set `PORTAINER_SERVER` to the optiplex-two HTTP URL (see local file), run
-   `./sync-portainer-agent.sh --dry-run`, then apply. Confirm green in Portainer, then
-   `rm -rf ~/docker-compose-scripts/portainer_agent`.
-2. **optiplex-three:** run the sync to go 2.45.2 → 2.45.3. Optionally change its port line to
-   `"<lan-ip>:9001:9001"` first, and delete the stale `AGENT_VERSION=` line from `.env`.
+1. **After PR #41 merges, on optiplex-three and smiddleware:** download the script from `main`
+   once, then run `./sync-portainer-agent.sh --dry-run` and `./sync-portainer-agent.sh`. Each
+   agent should go to its server's version (2.45.4 for both as of 2026-11-22). Confirm green in
+   Portainer. On smiddleware, `rm -rf ~/docker-compose-scripts/portainer_agent` if it's still there.
+2. **optiplex-three:** optionally change its port line to `"<lan-ip>:9001:9001"` before that sync
+   (the sync keeps it), and delete the unused `AGENT_VERSION=` line from `.env`.
 3. **Template:** log rotation added and `- /:/host` dropped (2026-11-22). Re-add the mount only if
    someone needs Portainer's host file browser.
 4. **Inventory the rest:** check every other Docker host for an agent and for the old
