@@ -12,14 +12,14 @@ ipv6_prefix = 48
 
 # Proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the real
 # client IP. Loopback only for now — the stack publishes port 8888 directly,
-# so requests arrive with their genuine source address. If the instance moves
-# behind the traefik stack (see README "Reverse proxy"), uncomment the Docker
-# network range so the limiter buckets real clients instead of lumping
-# everyone under the proxy's IP.
+# so LAN clients normally retain their source address. Container NAT/proxy
+# paths can differ: verify the address seen from the actual MCP client.
+# If using Traefik, add only its actual IP or dedicated proxy subnet here;
+# do not trust every Docker network to supply forwarding headers.
 trusted_proxies = [
   '127.0.0.0/8',
   '::1',
-  # '172.16.0.0/12',  # Docker bridge/overlay networks (traefik)
+  # Add the actual reverse proxy address here when deploying one.
 ]
 
 [botdetection.ip_limit]
@@ -42,13 +42,10 @@ pass_ip = [
   # Real LAN clients (browsers on laptops/phones).
   '192.168.200.0/24',
   # The searxng_net bridge, pinned to this subnet in docker-compose.yml.
-  # REQUIRED for any containerised API consumer: the limiter matches
-  # request.remote_addr, which for a container is always a Docker-internal
-  # address -- never 192.168.200.x -- whether it arrives via the published
-  # host port or over a shared network. Without this entry a JSON client is
-  # capped at API_MAX=4 requests/hour and, because link_token marks any
-  # non-browser client suspicious, is 302-redirected to the index page after
-  # SUSPICIOUS_IP_MAX=3 requests per 30 days.
+  # Covers MCP consumers attached to this network. Clients on another bridge,
+  # behind NAT, or behind a proxy may present a different source address.
+  # Verify from the actual client before adding a narrow passlist entry.
+  # Non-passlisted JSON clients are subject to bot checks and API rate limits.
   '172.30.0.0/24',
 ]
 

@@ -13,6 +13,8 @@ services:
       - "192.168.200.14:8888:8080"
 
     volumes:
+      # Apply the tracked settings.yml and limiter.toml to this volume using
+      # README.md. Portainer Git redeploys do not update files inside it.
       - searxng_config:/etc/searxng:rw
       # rw (not ro): the entrypoint chowns everything under /etc/searxng and
       # would fail on a read-only mount.
