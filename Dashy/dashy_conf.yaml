@@ -292,11 +292,5 @@ sections:
       collapsed: true
       rows: 2
       cols: 2
-    items:
-      - title: statping
-        description: monitoring dashboard
-        icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/statping-ng.png
-        url: http://192.168.200.14:8000/
-        target: newtab
-        id: 0_1596_statping
+    items: []
 pages: []

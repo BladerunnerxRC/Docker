@@ -1,5 +1,11 @@
 # edge-stack
 
+![Traefik](https://img.shields.io/badge/traefik-v3.7.10-24A1C1?logo=traefikproxy&logoColor=white)
+![AdGuard Home](https://img.shields.io/badge/dns-adguard%20home-68BC71?logo=adguard&logoColor=white)
+![Portainer](https://img.shields.io/badge/deploy-portainer%20gitops-13BEF9?logo=portainer&logoColor=white)
+![Host](https://img.shields.io/badge/host-smiddleware-6C757D)
+![Blast radius](https://img.shields.io/badge/blast%20radius-HIGH-C9372C)
+
 Reverse proxy + LAN DNS for the `.shome` homelab. Runs on **smiddleware (192.168.200.52)**.
 
 | Service | Image | Reachable at |
@@ -12,6 +18,7 @@ Reverse proxy + LAN DNS for the `.shome` homelab. Runs on **smiddleware (192.168
 not from an older committed file. The only intentional deviation is pinning Traefik to
 `v3.7.10` — the version that was actually running behind the `:latest` tag.
 
+> [!CAUTION]
 > **Blast radius: HIGH.** This host is the reverse proxy for every `.shome` service *and*
 > the LAN DNS resolver. Redeploying briefly stops AdGuard, which means no DNS for the
 > household. Do it in a quiet window, or set a temporary secondary DNS on the router first.
@@ -30,9 +37,10 @@ Nothing stateful lives in this repo. All of it is bind-mounted from `/opt/netlab
 Recreating the containers does **not** touch it — certs, `acme.json`, and AdGuard's
 config and query stats all survive. This is what makes redeploy safe.
 
-Note that `traefik.yml` (static config) and `dynamic/*.yml` (file provider) are read from
-that host path at runtime, **not** from this repo. Copies committed elsewhere in this
-repo are reference material and are not what Traefik loads.
+> [!NOTE]
+> `traefik.yml` (static config) and `dynamic/*.yml` (file provider) are read from
+> that host path at runtime, **not** from this repo. Copies committed elsewhere in this
+> repo are reference material and are not what Traefik loads.
 
 ---
 
@@ -70,11 +78,12 @@ to the agent. Three consequences worth knowing:
 
 ### First-time cutover
 
-The three containers currently belong to an older Portainer stack that was created from
-the web editor (`com.docker.compose.project=edge-stack`,
-`config_files=/data/compose/14/...`). Portainer **cannot convert a web-editor stack to a
-Git-backed one in place** — the old stack has to go first, or the new deploy fails on
-`container_name` collisions.
+> [!IMPORTANT]
+> The three containers currently belong to an older Portainer stack that was created from
+> the web editor (`com.docker.compose.project=edge-stack`,
+> `config_files=/data/compose/14/...`). Portainer **cannot convert a web-editor stack to a
+> Git-backed one in place** — the old stack has to go first, or the new deploy fails on
+> `container_name` collisions.
 
 ```bash
 # 1. Baseline, to compare against afterward
@@ -101,8 +110,9 @@ docker pull traefik:v3.7.10
 | `https://dns.shome/` | `302` (AdGuard login redirect — normal) |
 | `https://traefik.shome/dashboard/` | `200` |
 
-Then delete the old `edge-stack` stack in the Portainer UI — **this starts the DNS
-outage** — and immediately deploy the new Git-backed stack per the steps above.
+> [!WARNING]
+> Then delete the old `edge-stack` stack in the Portainer UI — **this starts the DNS
+> outage** — and immediately deploy the new Git-backed stack per the steps above.
 
 If the old stack does not appear in Portainer's list, remove the containers directly:
 
@@ -132,8 +142,9 @@ curl -ks https://traefik.shome/api/http/routers | jq 'map(select(.provider=="fil
 curl -ks https://traefik.shome/api/http/routers | jq 'length'
 ```
 
-Success = three containers up on the right tags, DNS resolving, **13 file-provider
-routers and 16 total**, and no step-ca certificate errors.
+> [!TIP]
+> Success = three containers up on the right tags, DNS resolving, **13 file-provider
+> routers and 16 total**, and no step-ca certificate errors.
 
 ---
 
@@ -153,9 +164,10 @@ removing it is a **behavior change** and should be its own commit.
 
 ## Dashboard authentication
 
-**The Traefik dashboard is protected by IP allowlist only.** Its router middlewares are
-`traefik-ipallow@docker` and nothing else, so anyone on `192.168.200.0/24` **or the whole
-of `192.168.0.0/16`** reaches `/dashboard` and `/api` with no password.
+> [!WARNING]
+> **The Traefik dashboard is protected by IP allowlist only.** Its router middlewares are
+> `traefik-ipallow@docker` and nothing else, so anyone on `192.168.200.0/24` **or the whole
+> of `192.168.0.0/16`** reaches `/dashboard` and `/api` with no password.
 
 `/opt/netlab-stack/traefik/auth/.htpasswd` exists and is already mounted into the
 container, but nothing references it. `compose.yaml` carries the BasicAuth middleware

@@ -8,6 +8,8 @@
 # Run-on: Always - Reguardless of result
 # Time-out: 300 seconds (5 minutes)
 #
+# Runs on: optiplex-two (192.168.200.14), the Docker host where mariadb-kodi runs.
+#
 # Borg must also include /var/backups/borg-kodidb/latest in its backup paths,
 # or the dump is produced and never archived.
 #
@@ -21,7 +23,7 @@ echo "Starting KodiDB pre-backup database dump..."
 ssh \
   -o BatchMode=yes \
   -o StrictHostKeyChecking=accept-new \
-  root@192.168.1.20 \
+  root@192.168.200.14 \
   /usr/local/sbin/borg-prep-kodidb.sh
 
 echo "KodiDB pre-backup database dump completed."
