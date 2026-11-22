@@ -29,7 +29,6 @@ that are versioned in this repo, deployed safely, and restorable without Borg UI
   | `borg-prep-appdata-optiplex-two.sh` | optiplex-two | `borg-backup/` | **3.0.0**, survey 2026-10-19, matches deployed |
   | `borg-prep-appdata-optiplex-three.sh` | optiplex-three (k3s worker) | `borg-backup/` | **2.0.0**, matches deployed |
   | `borg-prep-kodidb.sh` | optiplex-two (`mariadb-kodi`) | [`KodiDB/`](../KodiDB/) | own Borg job |
-  | `borg-prep-matomo.sh` | `$MATOMO_DOCKER_HOST` | [`Matomo/`](../Matomo/) | own Borg job |
   | `borgui-config-export-snapshot` | optiplex-docker (in container) | `borg-backup/` | Borg UI self-backup |
 
 - Host IPs are already public in the README; nothing in this handoff needs a `.local.md`.
@@ -157,8 +156,9 @@ Confirm each before acting on it.
    optiplex-two: done (plan includes it, marker set 2026-10-19). optiplex-three and smiddleware: unknown.
 2. **Live KodiDB entity.** Was the Borg UI script entity fixed by hand, or is it still pointing at
    `192.168.1.20`? Check the entity in Borg UI → Scripts, and its last run log.
-3. **Matomo host.** What does `MATOMO_DOCKER_HOST` resolve to in the Borg UI entity, and is
-   `/var/backups/borg-matomo/latest` in that host's plan?
+3. **Matomo retired.** Matomo was removed from this repo on 2026-11-21. Is its Borg UI job/script
+   entity (`borg-prep-matomo.sh`) still there? If so, delete it, plus the script in `/usr/local/sbin/`
+   and `/var/backups/borg-matomo/` on the host it ran on.
 4. **`claude-discovery`.** Is the read-only discovery account
    ([`claude-discovery/`](claude-discovery/)) installed on any host? `id claude; ls -l /usr/local/sbin/claude-discovery`
 5. **Restore test.** No record of a test restore. The README restore flow is untested end to end.
