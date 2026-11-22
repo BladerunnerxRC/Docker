@@ -8,6 +8,7 @@
 #   ./sync-portainer-agent.sh --force     # use the template's tag if the server is
 #                                         # unreachable; recreate even if unchanged
 #   ./sync-portainer-agent.sh --no-self-update   # don't replace this script
+#   ./sync-portainer-agent.sh --log       # append output to sync.log (for cron)
 #
 # Run it after upgrading the Portainer server; the agent follows the server.
 #
@@ -64,6 +65,9 @@ VERIFY_INTERVAL=2      # seconds between attempts
 DRY_RUN=0
 FORCE=0
 SELF_UPDATE=1
+LOG=0
+LOG_FILE="${LOG_FILE:-${COMPOSE_DIR}/sync.log}"
+LOG_MAX_KB="${LOG_MAX_KB:-512}"   # past this, sync.log moves to sync.log.1 (one old copy kept)
 NEW_FILE=""           # downloaded compose; global so the EXIT trap can clean it up
 TARGET=""             # version to deploy; set by resolve_target
 FIRST_INSTALL=0
@@ -224,6 +228,24 @@ resolve_target() {
 }
 
 # ---------------------------------------------------------------------------
+# Logging (--log)
+#
+# Sends all output to LOG_FILE, rotating it first once it passes LOG_MAX_KB,
+# so a nightly cron job can't grow it without limit.
+# ---------------------------------------------------------------------------
+start_log() {
+    local size_kb
+    mkdir -p "$(dirname "$LOG_FILE")"
+    if [[ -f "$LOG_FILE" ]]; then
+        size_kb=$(( $(stat -c %s "$LOG_FILE") / 1024 ))
+        ((size_kb < LOG_MAX_KB)) || mv -f "$LOG_FILE" "${LOG_FILE}.1"
+    fi
+    exec >>"$LOG_FILE" 2>&1
+    C_RED=""; C_GRN=""; C_YEL=""; C_RST=""
+    [[ -n "${SYNC_SELF_UPDATED:-}" ]] || printf '=== %s ===\n' "$(date '+%F %T')"
+}
+
+# ---------------------------------------------------------------------------
 # Self-update
 #
 # Hosts keep a copy of this script, so fixes on GitHub would otherwise never
@@ -279,9 +301,11 @@ Usage: $(basename "$0") [--dry-run] [--force]
   --force            Use the template's tag if the server is unreachable;
                      recreate even if unchanged
   --no-self-update   Don't replace this script with the copy on GitHub
+  --log              Append all output to LOG_FILE (default sync.log here);
+                     rotated to .1 past LOG_MAX_KB (default 512)
 
 Environment: COMPOSE_DIR, LEGACY_DIR, REPO, REF, SRC_PATH, SCRIPT_SRC_PATH,
-             AGENT_HOST, PORTAINER_SERVER
+             AGENT_HOST, PORTAINER_SERVER, LOG_FILE, LOG_MAX_KB
 EOF
 }
 
@@ -292,11 +316,13 @@ main() {
             --dry-run) DRY_RUN=1 ;;
             --force)   FORCE=1 ;;
             --no-self-update) SELF_UPDATE=0 ;;
+            --log)     LOG=1 ;;
             -h|--help) usage; exit 0 ;;
             *) die "Unknown option: $arg (see --help)" ;;
         esac
     done
 
+    ((LOG)) && start_log
     command -v curl >/dev/null || die "curl is required"
     self_update "$@"
     if [[ ! -f "$COMPOSE_FILE" && -f "${LEGACY_DIR}/docker-compose.yml" \

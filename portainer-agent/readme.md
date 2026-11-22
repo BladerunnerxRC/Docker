@@ -157,13 +157,19 @@ rm -rf ~/docker-compose-scripts/portainer_agent
 No change to this repo is needed. Each host follows its own server, so hosts of different
 servers can run different versions.
 
-To update automatically, run the script from your user's crontab (`crontab -e`). It does
-nothing when the agent already matches the server:
+To update automatically, add a nightly job to your user's crontab (not root's). Running this
+again replaces the entry instead of adding a second one:
 
-```cron
-17 4 * * * $HOME/portainer-agent/sync-portainer-agent.sh >> $HOME/portainer-agent/sync.log 2>&1
+```bash
+( crontab -l 2>/dev/null | grep -v sync-portainer-agent.sh
+  echo '17 4 * * * $HOME/portainer-agent/sync-portainer-agent.sh --log'
+) | crontab -
 ```
 
+`--log` appends the output to `~/portainer-agent/sync.log`. Once that file passes 512 KB it
+becomes `sync.log.1` and a new one starts, so at most two files are kept. Change the limit with
+`LOG_MAX_KB`. When the agent already matches the server, a run only checks `/ping`. Look for
+`[!]` lines in the log.
 ## sync-portainer-agent.sh
 
 The script runs these steps:
@@ -194,6 +200,7 @@ so a cron run catches an agent that has stopped working.
 | `--dry-run` | Shows the diff and target version. Changes nothing.                 |
 | `--force`   | If the server can't be reached, deploys the template's tag instead of stopping. Recreates even if nothing changed. |
 | `--no-self-update` | Runs this copy of the script without checking GitHub for a newer one. |
+| `--log`     | Appends all output to `sync.log`, rotating it past `LOG_MAX_KB` (512). For cron. |
 
 These environment variables override the defaults:
 
@@ -205,6 +212,8 @@ These environment variables override the defaults:
 | `REF`              | `main` (a branch, tag or commit SHA)          |
 | `SRC_PATH`         | `portainer-agent/docker-compose.yml`          |
 | `SCRIPT_SRC_PATH`  | `portainer-agent/sync-portainer-agent.sh`     |
+| `LOG_FILE`         | `sync.log` in `COMPOSE_DIR`                   |
+| `LOG_MAX_KB`       | `512`                                         |
 | `AGENT_HOST`       | the IP from the port binding, or `127.0.0.1`  |
 | `PORTAINER_SERVER` | read from `.env` in `COMPOSE_DIR`             |
 

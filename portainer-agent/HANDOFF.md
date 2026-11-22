@@ -88,7 +88,8 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
    someone needs Portainer's host file browser.
 4. **Inventory the rest:** check every other Docker host for an agent and for the old
    `~/docker-compose-scripts/portainer_agent` directory; record which server manages it.
-5. **Optional:** nightly cron for the sync on each host (example in `readme.md`).
+5. **Nightly cron** on optiplex-three and smiddleware once PR #41 is merged: command in
+   `readme.md` ("Updating to a new version"), using `--log` (capped at 512 KB + one old copy).
 
 ## Improvements offered, not done
 - optiplex-two: firewall port 9000 so only the Traefik host (and sync hosts, if they use the
