@@ -1,6 +1,8 @@
 services:
   portainer_agent:
-    image: portainer/agent:2.45.3
+    # The sync script replaces this tag with the Portainer server's version.
+    # It is used only with --force when the server cannot be reached.
+    image: portainer/agent:2.45.4
     container_name: portainer_agent
     restart: always
     ports:
@@ -10,5 +12,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/docker/volumes:/var/lib/docker/volumes
-      - /:/host
-      
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

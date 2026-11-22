@@ -21,12 +21,12 @@ it, deployed from one compose template in this repo, updated on purpose (never `
 Watchtower), and verifiable from outside.
 
 ## How it works now
-- **Template:** [`docker-compose.yml`](docker-compose.yml) on `main`. Its image tag is the version
-  every host should run. Currently `portainer/agent:2.45.3`.
+- **Template:** [`docker-compose.yml`](docker-compose.yml) on `main`. The sync script replaces its
+  image tag with the server's version; the template's tag (`2.45.4`) is only the `--force` fallback.
 - **Deploy/update:** [`sync-portainer-agent.sh`](sync-portainer-agent.sh), run on each host from
   `~/portainer-agent/`. It downloads the template from `main`, keeps the host's
-  `<lan-ip>:9001:9001` binding, refuses a tag that isn't `X.Y.Z` or doesn't match
-  `PORTAINER_SERVER`'s `/api/status`, then pulls, recreates, checks `/ping`, and rolls back on failure.
+  `<lan-ip>:9001:9001` binding, sets the tag to `PORTAINER_SERVER`'s `/api/status` version
+  (must be `X.Y.Z`), then pulls, recreates, checks `/ping`, and rolls back on failure.
 - **Per-host config:** `~/portainer-agent/.env` with `PORTAINER_SERVER` (required) and
   `AGENT_SECRET` (optional). Owner = the user, `.env` mode `600`.
 - **Old layout:** hosts used `~/docker-compose-scripts/portainer_agent/` with
@@ -35,7 +35,8 @@ Watchtower), and verifiable from outside.
   from the old directory on its first run; it never deletes the old directory.
 
 ## Environment
-Two **independent** Portainer Business Edition servers, both on **2.45.3** — intentional.
+Two **independent** Portainer Business Edition servers, both on **2.45.4** (2026-11-22), upgraded
+through the UI. Each host's agent follows its own server, so they don't have to move together.
 
 | Server host | How it's reached | Manages |
 |---|---|---|
@@ -49,18 +50,27 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
 
 | Host | Directory | Agent | State / blocker |
 |---|---|---|---|
-| optiplex-three | `~/portainer-agent` | 2.45.2 (synced 2026-10-16) | Needs a re-sync to 2.45.3. Port binding is bare `9001:9001` (listens on every interface). `.env` still has the unused `AGENT_VERSION=` line. |
-| smiddleware | `~/portainer-agent` (compose copied from old dir 2026-10-23) | 2.45.2 — shown as **Outdated** in Portainer | Sync stopped: `.env` had `PORTAINER_SERVER` pointing at optiplex-two over `https:9443`, which isn't published. Fix to the HTTP URL, re-run. Old dir still present. |
+| optiplex-three | `~/portainer-agent` | 2.45.3 (checked 2026-11-22); its server runs 2.45.4 | Sync after PR #41 merges. Port binding may still be bare `9001:9001`. `.env` may still have the unused `AGENT_VERSION=` line (harmless). |
+| smiddleware | `~/portainer-agent` | 2.45.3, LAN-IP binding (checked 2026-11-22); its server runs 2.45.4 | Sync after PR #41 merges. `PORTAINER_SERVER` (HTTP URL) works. Check whether the old directory is still there. |
 | optiplex-two | n/a | — | Server host; its own endpoint uses the local socket, no agent needed for its own server. |
 | optiplex-docker | n/a | — | Server host. Unknown whether it runs an agent for the other server. |
 
 ## Decisions made
 - **Pin the tag; never `latest`.** Agent/server version mismatch breaks the handshake and the
-  endpoint goes offline. The script enforces `X.Y.Z` and the server match (`--force` overrides).
-- **GitHub is the source of truth.** Editing the compose file on a host is pointless — the next
-  sync overwrites it. Bump the tag on `main` (via PR), then sync each host.
+  endpoint goes offline. `latest` also leaves no older image to roll back to.
+- **The agent follows its server** (2026-11-22). Servers are upgraded in the UI, so a repo tag
+  kept going stale. The script now takes the version from the server's `/api/status`; the
+  template's tag is only the `--force` fallback. Hosts of different servers can differ.
+- **The script updates itself** from `REF` on every run (2026-11-22), so fixes reach the hosts.
+  Testing a branch: pass `REF=<branch>`, or the script replaces itself with `main`'s copy.
+  Accepted risk (PR #41 review): the script trusts `main` exactly as the compose template does;
+  branch protection is the control. A new copy must answer `--probe`; the old one is kept as `.prev`.
+- **GitHub is the source of truth for the rest of the compose file.** Editing it on a host is
+  pointless — the next sync overwrites it.
 - **Bind the agent to the host's LAN IP**, not `0.0.0.0`. The template keeps a bare `9001:9001`
   because the IP differs per host; the script preserves each host's binding.
+- **No `/:/host` mount** (2026-11-22): the host file browser isn't used, and the mount would give
+  the agent the whole host filesystem.
 - **No healthcheck** (scratch image, no shell) and **no Watchtower labels**. Monitor
   `https://<host>:9001/ping` externally (HTTP 204, skip cert validation).
 - **Directory moved** to `~/portainer-agent`. Compose names the project after the directory, so
@@ -71,24 +81,20 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
 - **Compose filename is `.yml`** (template renamed from `.yaml` to match the script and hosts).
 
 ## Next steps
-1. **smiddleware:** set `PORTAINER_SERVER` to the optiplex-two HTTP URL (see local file), run
-   `./sync-portainer-agent.sh --dry-run`, then apply. Confirm green in Portainer, then
-   `rm -rf ~/docker-compose-scripts/portainer_agent`.
-2. **optiplex-three:** run the sync to go 2.45.2 → 2.45.3. Optionally change its port line to
-   `"<lan-ip>:9001:9001"` first, and delete the stale `AGENT_VERSION=` line from `.env`.
-3. **Template decisions (open):**
-   - Add a `logging:` block (`json-file`, `max-size: 10m`, `max-file: 3`). smiddleware's old file
-     had it; the template doesn't, so a sync currently **drops log rotation**.
-   - Keep or drop `- /:/host`. It's only needed for Portainer's host file browser; smiddleware's
-     old file deliberately left it out, and a sync **adds** it.
+1. **After PR #41 merges, on optiplex-three and smiddleware:** download the script from `main`
+   once, then run `./sync-portainer-agent.sh --dry-run` and `./sync-portainer-agent.sh`. Each
+   agent should go to its server's version (2.45.4 for both as of 2026-11-22). Confirm green in
+   Portainer. On smiddleware, `rm -rf ~/docker-compose-scripts/portainer_agent` if it's still there.
+2. **optiplex-three:** optionally change its port line to `"<lan-ip>:9001:9001"` before that sync
+   (the sync keeps it), and delete the unused `AGENT_VERSION=` line from `.env`.
+3. **Template:** log rotation added and `- /:/host` dropped (2026-11-22). Re-add the mount only if
+   someone needs Portainer's host file browser.
 4. **Inventory the rest:** check every other Docker host for an agent and for the old
    `~/docker-compose-scripts/portainer_agent` directory; record which server manages it.
-5. **Shared tag vs two servers:** both servers must be upgraded together, or hosts of the
-   lagging server will refuse to sync. If that becomes a problem, add a per-server tag override
-   to the script (e.g. `AGENT_VERSION` in `.env` taking precedence over the template tag).
+5. **Nightly cron** on optiplex-three and smiddleware once PR #41 is merged:
+   `./sync-portainer-agent.sh --install-cron` (runs with `--log`, capped at 512 KB + one old copy).
 
 ## Improvements offered, not done
-- Script: `chmod 600 .env` after copying it from the old directory (`cp -p` keeps the old mode).
 - optiplex-two: firewall port 9000 so only the Traefik host (and sync hosts, if they use the
   direct URL) can reach it — today anyone on the LAN can bypass Traefik and log in over HTTP.
 - optiplex-two gets its address from DHCP; a reservation would protect Checkmk's agent

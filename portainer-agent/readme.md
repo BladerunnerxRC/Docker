@@ -7,7 +7,7 @@ This folder has two files:
 
 | File                      | Purpose                                                        |
 |---------------------------|----------------------------------------------------------------|
-| `docker-compose.yml`      | The compose template. Its image tag is the version every host should run. |
+| `docker-compose.yml`      | The compose template. The sync script sets its image tag to the server's version. |
 | `sync-portainer-agent.sh` | Downloads that template from GitHub and redeploys the agent on a host. |
 
 The list of hosts and their IPs is in `HOSTS.local.md`. That file is gitignored and exists only
@@ -15,9 +15,11 @@ on your own machine, because this repo is public.
 
 ## Rules for the compose file
 
-- **Pin the image tag** to the Portainer server's version (`portainer/agent:2.45.2`, never
-  `latest`). If the agent and server versions differ, the handshake fails and the endpoint
-  goes offline in Portainer.
+- **The agent runs the Portainer server's version**, pinned as `X.Y.Z` and never `latest`.
+  If the agent and server versions differ, the handshake fails and the endpoint goes offline
+  in Portainer. The sync script reads the server's version and writes it into the host's
+  compose file. The tag in the template is only a fallback for `--force` when the server
+  can't be reached, so it doesn't need updating after every server upgrade.
 - **Bind the port to the host's LAN IP** on each host (`"<lan-ip>:9001:9001"`). The agent can
   control Docker on the whole host, so it should not listen on every interface. The template
   uses a bare `9001:9001` because the IP is different on every host. The sync script keeps
@@ -28,6 +30,11 @@ on your own machine, because this repo is public.
   skip certificate validation.
 - **Leave out Watchtower labels.** If Watchtower updates the agent ahead of the server, the
   endpoint goes offline. Update it on purpose with the sync script.
+- **Log rotation** is set in the template (`json-file`, 3 × 10 MB) so the agent's logs can't
+  fill the disk.
+- **No `/:/host` mount.** It would give the agent the whole host filesystem, and Portainer only
+  uses it for the host file browser (Host → Setup → "Enable host management features"), which
+  isn't used here. Containers, stacks, volumes and logs don't need it.
 - **`AGENT_SECRET` is optional.** If you set it in the host's `.env`, the Portainer server
   needs the same secret, or it can't connect.
 
@@ -44,8 +51,8 @@ curl -fsSLO https://raw.githubusercontent.com/BladerunnerxRC/Docker/main/portain
 chmod 755 sync-portainer-agent.sh
 ```
 
-Create a `.env` file in the same directory. The script needs the server URL to check the
-version. `.env` files are gitignored, and Docker Compose ignores variables it doesn't use.
+Create a `.env` file in the same directory. The script asks this server which agent version
+to deploy, so point it at the server that manages this host. `.env` files are gitignored, and Docker Compose ignores variables it doesn't use.
 
 ```bash
 PORTAINER_SERVER=https://<server-ip>:9443
@@ -136,44 +143,73 @@ rm -rf ~/docker-compose-scripts/portainer_agent
 
 ## Updating to a new version
 
-1. Check the server's version: `curl -sk https://<server-ip>:9443/api/status`.
-2. Change the image tag in this folder's `docker-compose.yml`, then commit and push.
-3. On each host, preview the change, then apply it:
+1. Upgrade the Portainer server in its UI.
+2. On each host that server manages, preview the change, then apply it:
 
    ```bash
+   cd ~/portainer-agent
    ./sync-portainer-agent.sh --dry-run
    ./sync-portainer-agent.sh
    ```
 
-4. Confirm the endpoint is green in the Portainer UI.
+3. Confirm the endpoint is green in the Portainer UI.
 
-`raw.githubusercontent.com` can serve the old file for a few minutes after a push. To get the
-new one straight away, pass the commit SHA: `REF=<sha> ./sync-portainer-agent.sh`.
+No change to this repo is needed. Each host follows its own server, so hosts of different
+servers can run different versions.
 
+To update automatically, let the script add a nightly job to your user's crontab (run it as
+yourself, not root):
+
+```bash
+./sync-portainer-agent.sh --install-cron
+crontab -l     # confirm
+```
+
+It adds one line ending in `# portainer-agent-sync` (4:17 every night; change it with
+`CRON_SCHEDULE`). Running it again replaces only that line, and your other cron jobs are kept.
+If your crontab can't be read, it stops and changes nothing.
+
+The job uses `--log`, which appends the output to `~/portainer-agent/sync.log`. Once that file
+passes 512 KB it becomes `sync.log.1` and a new one starts, so at most two files are kept.
+Change the limit with `LOG_MAX_KB`. When the agent already matches the server, a run only
+checks `/ping`. Look for `[!]` lines in the log.
 ## sync-portainer-agent.sh
 
 The script runs these steps:
 
-1. Downloads `portainer-agent/docker-compose.yml` from GitHub and validates it with
+1. Takes a lock (`.sync.lock`), so a cron run and a manual run can't overlap. A second run
+   stops with "Another sync is running".
+2. Replaces itself with `sync-portainer-agent.sh` from GitHub if that copy differs, then
+   reruns. The new copy must parse and answer `--probe`. If it doesn't, or the download fails,
+   the running copy is used. The copy it replaces is kept as `sync-portainer-agent.sh.prev`.
+   `--dry-run` only reports that a newer script exists.
+3. Downloads `portainer-agent/docker-compose.yml` from GitHub and validates it with
    `docker compose config`.
-2. Keeps the host's `<lan-ip>:9001:9001` binding from the current compose file.
-3. Stops unless the tag is `X.Y.Z` and matches the Portainer server version.
-4. Shows a diff, backs up the current file to `docker-compose.yml.bak.<timestamp>`, pulls the
-   image and recreates the container.
-5. Checks that the agent answers on `/ping` within 30 seconds.
-6. Prunes dangling images, but only after the check passes.
+4. Keeps the host's `<lan-ip>:9001:9001` binding from the current compose file.
+5. Reads the Portainer server's version from `/api/status` and sets the image tag to it. Only
+   a complete HTTP 200 response counts. Stops if there's no version or it isn't `X.Y.Z`, and
+   checks with `docker compose config --images` that the file really runs that image.
+6. Shows a diff, backs up the current file to `docker-compose.yml.bak.<timestamp>.<random>`,
+   pulls the image and recreates the container.
+7. Checks that the agent answers on `/ping` within 30 seconds.
+8. Prunes dangling images and keeps the 5 newest compose backups, but only after the check
+   passes.
 
 If the pull fails, the script restores the compose file and leaves the container untouched. If
 `docker compose up` fails or `/ping` doesn't answer, it restores the backup and recreates the
 container from it. The previous image is still there, because nothing is pruned on failure.
 
-If the compose file hasn't changed and the agent already runs that tag, the script exits
-without touching anything.
+If the compose file hasn't changed and the agent already runs the server's version, the script
+changes nothing. It still checks `/ping`, and exits with an error if the agent isn't answering,
+so a cron run catches an agent that has stopped working.
 
 | Option      | Effect                                                              |
 |-------------|---------------------------------------------------------------------|
 | `--dry-run` | Shows the diff and target version. Changes nothing.                 |
-| `--force`   | Skips the server-version check, and recreates even if nothing changed. |
+| `--force`   | If the server can't be reached, deploys the template's tag instead of stopping. Recreates even if nothing changed. |
+| `--no-self-update` | Runs this copy of the script without checking GitHub for a newer one. |
+| `--log`     | Appends all output to `sync.log`, rotating it past `LOG_MAX_KB` (512). For cron. |
+| `--install-cron` | Adds or replaces the nightly job in your crontab and keeps other jobs. |
 
 These environment variables override the defaults:
 
@@ -184,6 +220,10 @@ These environment variables override the defaults:
 | `REPO`             | `BladerunnerxRC/Docker`                       |
 | `REF`              | `main` (a branch, tag or commit SHA)          |
 | `SRC_PATH`         | `portainer-agent/docker-compose.yml`          |
+| `SCRIPT_SRC_PATH`  | `portainer-agent/sync-portainer-agent.sh`     |
+| `LOG_FILE`         | `sync.log` in `COMPOSE_DIR`                   |
+| `LOG_MAX_KB`       | `512`                                         |
+| `CRON_SCHEDULE`    | `17 4 * * *` (used by `--install-cron`)       |
 | `AGENT_HOST`       | the IP from the port binding, or `127.0.0.1`  |
 | `PORTAINER_SERVER` | read from `.env` in `COMPOSE_DIR`             |
 

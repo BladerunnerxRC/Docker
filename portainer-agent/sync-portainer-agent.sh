@@ -5,17 +5,26 @@
 # Usage:
 #   ./sync-portainer-agent.sh             # fetch, show diff, apply, verify
 #   ./sync-portainer-agent.sh --dry-run   # fetch and show diff only
-#   ./sync-portainer-agent.sh --force     # skip the server-version guard and
-#                                         # recreate even if nothing changed
+#   ./sync-portainer-agent.sh --force     # use the template's tag if the server is
+#                                         # unreachable; recreate even if unchanged
+#   ./sync-portainer-agent.sh --no-self-update   # don't replace this script
+#   ./sync-portainer-agent.sh --log       # append output to sync.log (for cron)
+#   ./sync-portainer-agent.sh --install-cron     # add/replace the nightly cron job
+#
+# Run it after upgrading the Portainer server; the agent follows the server.
 #
 # Behavior:
-#   1. Downloads portainer-agent/docker-compose.yml from GitHub
-#   2. Keeps this host's LAN-IP port binding from the current compose file
-#   3. Refuses a tag that isn't X.Y.Z or doesn't match the Portainer server
-#   4. Backs up the current file, pulls the image named in the new file,
+#   1. Takes a per-directory lock so a cron run and a manual run can't overlap
+#   2. Replaces itself with the copy on GitHub if that one differs and answers
+#      --probe (old copy kept as .prev), then reruns
+#   3. Downloads portainer-agent/docker-compose.yml from GitHub
+#   4. Keeps this host's LAN-IP port binding from the current compose file
+#   5. Sets the image tag to the Portainer server's version (/api/status) and
+#      checks compose resolves to exactly that image
+#   6. Backs up the current file, pulls the image named in the new file,
 #      recreates, waits for /ping
-#   5. Restores the backup and recreates on failure
-#   6. Prunes dangling images only after a verified-good result
+#   7. Restores the backup and recreates on failure
+#   8. Prunes dangling images and old backups only after a verified-good result
 #
 # A host still set up in the old ~/docker-compose-scripts/portainer_agent is
 # moved over on the first run: its compose file and .env are copied here.
@@ -40,8 +49,11 @@ REPO="${REPO:-BladerunnerxRC/Docker}"
 REF="${REF:-main}"
 SRC_PATH="${SRC_PATH:-portainer-agent/docker-compose.yml}"
 SRC_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${SRC_PATH}"
+SCRIPT_SRC_PATH="${SCRIPT_SRC_PATH:-portainer-agent/sync-portainer-agent.sh}"
+SCRIPT_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${SCRIPT_SRC_PATH}"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 
-# Portainer server — the new tag must match its version. Set it in the
+# Portainer server — the agent is deployed at its version. Set it in the
 # environment or in ${COMPOSE_DIR}/.env (gitignored), e.g.
 #   PORTAINER_SERVER=https://<server-ip>:9443
 if [[ -f "${COMPOSE_DIR}/.env" ]]; then
@@ -56,7 +68,17 @@ VERIFY_INTERVAL=2      # seconds between attempts
 
 DRY_RUN=0
 FORCE=0
+SELF_UPDATE=1
+LOG=0
+LOG_FILE="${LOG_FILE:-${COMPOSE_DIR}/sync.log}"
+LOG_MAX_KB="${LOG_MAX_KB:-512}"   # past this, sync.log moves to sync.log.1 (one old copy kept)
+LOCK_FILE="${COMPOSE_DIR}/.sync.lock"
+KEEP_BACKUPS=5                    # newest compose backups kept after a good sync
+CRON_SCHEDULE="${CRON_SCHEDULE:-17 4 * * *}"
+CRON_MARK="# portainer-agent-sync"   # identifies the job --install-cron manages
+PROBE_REPLY="sync-portainer-agent probe ok"
 NEW_FILE=""           # downloaded compose; global so the EXIT trap can clean it up
+TARGET=""             # version to deploy; set by resolve_target
 FIRST_INSTALL=0
 MIGRATE=0
 CURRENT_FILE="$COMPOSE_FILE"   # the host's compose file as it is now; the legacy one in a dry-run move
@@ -64,8 +86,12 @@ CURRENT_FILE="$COMPOSE_FILE"   # the host's compose file as it is now; the legac
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
-C_RED=$'\033[0;31m'; C_GRN=$'\033[0;32m'
-C_YEL=$'\033[0;33m'; C_RST=$'\033[0m'
+if [[ -t 1 ]]; then        # no colour codes in cron logs
+    C_RED=$'\033[0;31m'; C_GRN=$'\033[0;32m'
+    C_YEL=$'\033[0;33m'; C_RST=$'\033[0m'
+else
+    C_RED=""; C_GRN=""; C_YEL=""; C_RST=""
+fi
 
 info() { printf '%s[*]%s %s\n' "$C_YEL" "$C_RST" "$*"; }
 ok()   { printf '%s[+]%s %s\n' "$C_GRN" "$C_RST" "$*"; }
@@ -85,7 +111,7 @@ running_version() {
 # Image tag written in a compose file.
 file_version() {
     local v name
-    v=$(grep -oP 'image:\s*portainer/agent:\K\S+' "$1" | head -n1 || true)
+    v=$(grep -oP 'image:\s*["\x27]?portainer/agent:\K[^"\x27\s]+' "$1" | head -n1 || true)
     # Older host files use ${AGENT_VERSION:?...}; show what .env sets it to.
     if [[ "$v" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*) ]]; then
         name="${BASH_REMATCH[1]}"
@@ -100,9 +126,15 @@ file_bind_ip() {
 }
 
 # Portainer server version. Empty if unreachable.
+# Only a complete transfer with HTTP 200 counts: an error page or a cut-off
+# response must not supply a version.
 server_version() {
-    curl -sk --max-time 5 "${PORTAINER_SERVER}/api/status" 2>/dev/null \
-        | grep -oP '"Version"\s*:\s*"\K[^"]+' || echo ""
+    local resp code
+    resp=$(curl -sk --max-time 5 -w '\n%{http_code}' "${PORTAINER_SERVER}/api/status" 2>/dev/null) \
+        || return 0
+    code="${resp##*$'\n'}"
+    [[ "$code" == "200" ]] || return 0
+    grep -oP '"Version"\s*:\s*"\K[^"]+' <<<"${resp%$'\n'*}" | head -n1 || true
 }
 
 # ---------------------------------------------------------------------------
@@ -184,29 +216,137 @@ fetch_compose() {
         || die "Downloaded compose file is invalid — not applied"
 }
 
-# Refuses tags that aren't X.Y.Z or don't match the server.
-check_target_version() {
-    local target="$1" srv
-
-    [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-        || die "Tag in GitHub compose is '${target}' — must be X.Y.Z (no 'latest' or placeholder)"
+# Sets TARGET to the server's version and writes it into the image tag of $1.
+# Falls back to the template's own tag only with --force.
+resolve_target() {
+    local file="$1" tmpl srv
+    tmpl=$(file_version "$file")
 
     if [[ -z "$PORTAINER_SERVER" ]]; then
-        ((FORCE)) || die "PORTAINER_SERVER not set — add it to ${COMPOSE_DIR}/.env, or use --force"
-        info "PORTAINER_SERVER not set — skipping version guard (--force)"
+        ((FORCE)) || die "PORTAINER_SERVER not set — add it to ${COMPOSE_DIR}/.env, or use --force to deploy the template's ${tmpl}"
+        info "PORTAINER_SERVER not set — using the template's ${tmpl} (--force)"
+        TARGET="$tmpl"
+    else
+        srv=$(server_version)
+        if [[ -n "$srv" ]]; then
+            TARGET="$srv"
+        else
+            ((FORCE)) || die "Could not get a version from ${PORTAINER_SERVER}/api/status — fix it, or use --force to deploy the template's ${tmpl}"
+            info "No version from the server — using the template's ${tmpl} (--force)"
+            TARGET="$tmpl"
+        fi
+    fi
+
+    [[ "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+        || die "Version '${TARGET}' is not X.Y.Z — nothing applied"
+    sed -i -E "s#(image:[[:space:]]*[\"']?portainer/agent:)[^\"'[:space:]]+#\1${TARGET}#" "$file"
+
+    # Check what compose will actually run, not what sed hoped to change.
+    local images
+    images=$(docker compose -f "$file" --project-directory "$COMPOSE_DIR" config --images 2>/dev/null) \
+        || die "Could not read the images from the compose file — nothing applied"
+    [[ "$images" == "portainer/agent:${TARGET}" ]] \
+        || die "Compose file would run '${images//$'\n'/, }', not portainer/agent:${TARGET} — nothing applied"
+}
+
+# ---------------------------------------------------------------------------
+# Logging (--log)
+#
+# Sends all output to LOG_FILE, rotating it first once it passes LOG_MAX_KB,
+# so a nightly cron job can't grow it without limit.
+# ---------------------------------------------------------------------------
+start_log() {
+    local size_kb
+    mkdir -p "$(dirname "$LOG_FILE")"
+    if [[ -f "$LOG_FILE" ]]; then
+        size_kb=$(( $(stat -c %s "$LOG_FILE") / 1024 ))
+        ((size_kb < LOG_MAX_KB)) || mv -f "$LOG_FILE" "${LOG_FILE}.1"
+    fi
+    exec >>"$LOG_FILE" 2>&1
+    C_RED=""; C_GRN=""; C_YEL=""; C_RST=""
+    [[ -n "${SYNC_SELF_UPDATED:-}" ]] || printf '=== %s ===\n' "$(date '+%F %T')"
+}
+
+# ---------------------------------------------------------------------------
+# Locking
+#
+# A cron run and a manual run must not interleave: one could restore its
+# backup over the other's deploy. The lock is held on fd 9, which survives the
+# self-update exec, so the rerun doesn't take it again.
+# ---------------------------------------------------------------------------
+take_lock() {
+    [[ -z "${SYNC_LOCK_HELD:-}" ]] || return 0
+    command -v flock >/dev/null || die "flock is required (package util-linux)"
+    mkdir -p "$COMPOSE_DIR"
+    exec 9>"$LOCK_FILE"
+    flock -n 9 || die "Another sync is running in ${COMPOSE_DIR} — try again when it finishes"
+    export SYNC_LOCK_HELD=1
+}
+
+# ---------------------------------------------------------------------------
+# Cron (--install-cron)
+#
+# Replaces only the line carrying CRON_MARK and keeps every other job. Stops
+# if the current crontab can't be read, rather than overwrite it.
+# ---------------------------------------------------------------------------
+install_cron() {
+    local cur line prefix=""
+    command -v crontab >/dev/null || die "crontab is not installed"
+    if ! cur=$(crontab -l 2>&1); then
+        [[ "$cur" == "no crontab for "* ]] || die "Could not read your crontab: ${cur}"
+        cur=""
+    fi
+    [[ "$COMPOSE_DIR" == "${HOME}/portainer-agent" ]] || prefix="COMPOSE_DIR=${COMPOSE_DIR} "
+    line="${CRON_SCHEDULE} ${prefix}${SCRIPT_PATH} --log ${CRON_MARK}"
+    {
+        [[ -z "$cur" ]] || grep -vF -- "$CRON_MARK" <<<"$cur" || true
+        echo "$line"
+    } | crontab - || die "crontab rejected the new schedule — nothing changed"
+    ok "Cron job set: ${line}"
+}
+
+# ---------------------------------------------------------------------------
+# Self-update
+#
+# Hosts keep a copy of this script, so fixes on GitHub would otherwise never
+# reach them. A failed or invalid download keeps the running copy.
+# ---------------------------------------------------------------------------
+self_update() {
+    local tmp
+    ((SELF_UPDATE)) || return 0
+    [[ -z "${SYNC_SELF_UPDATED:-}" ]] || return 0    # already restarted once
+
+    tmp=$(mktemp "${SCRIPT_PATH}.new.XXXXXX" 2>/dev/null) \
+        || { info "Can't write next to ${SCRIPT_PATH} — skipping script update"; return 0; }
+    if ! curl -fsSL --max-time 15 "$SCRIPT_URL" -o "$tmp"; then
+        rm -f "$tmp"
+        info "Could not check GitHub for a newer script — using this copy"
+        return 0
+    fi
+    sed -i 's/\r$//' "$tmp"
+
+    if cmp -s "$tmp" "$SCRIPT_PATH"; then
+        rm -f "$tmp"
+        return 0
+    fi
+    # It must parse and answer --probe, or it couldn't sync or update again.
+    if [[ ! -s "$tmp" ]] || ! bash -n "$tmp" 2>/dev/null \
+        || [[ "$(SYNC_LOCK_HELD=1 timeout 10 bash "$tmp" --probe 2>/dev/null)" != "$PROBE_REPLY" ]]; then
+        rm -f "$tmp"
+        err "Script on GitHub is empty, broken or doesn't answer --probe — using this copy"
+        return 0
+    fi
+    if ((DRY_RUN)); then
+        rm -f "$tmp"
+        info "A newer script is on GitHub — a run without --dry-run installs it first"
         return 0
     fi
 
-    srv=$(server_version)
-    if [[ -z "$srv" ]]; then
-        ((FORCE)) || die "Could not reach ${PORTAINER_SERVER} — fix it, or use --force"
-        info "Server unreachable — skipping version guard (--force)"
-    elif [[ "$srv" != "$target" ]]; then
-        ((FORCE)) || die "GitHub compose has ${target} but the server runs ${srv} — the endpoint would go offline. Use --force to apply anyway."
-        info "Server runs ${srv}, applying ${target} anyway (--force)"
-    else
-        ok "Target ${target} matches the Portainer server"
-    fi
+    chmod 755 "$tmp"
+    cp -p "$SCRIPT_PATH" "${SCRIPT_PATH}.prev"    # manual recovery: mv it back
+    mv -f "$tmp" "$SCRIPT_PATH"
+    ok "Updated $(basename "$SCRIPT_PATH") from GitHub — restarting it"
+    SYNC_SELF_UPDATED=1 exec "$SCRIPT_PATH" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -216,13 +356,21 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [--dry-run] [--force]
 
-  Pulls ${SRC_PATH} from github.com/${REPO} (${REF}),
-  keeps this host's port binding, pulls the image tag it names and recreates.
+  Deploys the agent at the Portainer server's version. Pulls ${SRC_PATH}
+  from github.com/${REPO} (${REF}), keeps this host's port binding, sets the
+  image tag to the server's version, pulls it and recreates.
 
-  --dry-run   Show the diff and target version, change nothing
-  --force     Skip the server-version guard; recreate even if unchanged
+  --dry-run          Show the diff and target version, change nothing
+  --force            Use the template's tag if the server is unreachable;
+                     recreate even if unchanged
+  --no-self-update   Don't replace this script with the copy on GitHub
+  --log              Append all output to LOG_FILE (default sync.log here);
+                     rotated to .1 past LOG_MAX_KB (default 512)
+  --install-cron     Add or replace the nightly job (CRON_SCHEDULE, default
+                     "17 4 * * *") in your crontab, keeping other jobs
 
-Environment: COMPOSE_DIR, LEGACY_DIR, REPO, REF, SRC_PATH, AGENT_HOST, PORTAINER_SERVER
+Environment: COMPOSE_DIR, LEGACY_DIR, REPO, REF, SRC_PATH, SCRIPT_SRC_PATH,
+             AGENT_HOST, PORTAINER_SERVER, LOG_FILE, LOG_MAX_KB, CRON_SCHEDULE
 EOF
 }
 
@@ -232,12 +380,19 @@ main() {
         case "$arg" in
             --dry-run) DRY_RUN=1 ;;
             --force)   FORCE=1 ;;
+            --no-self-update) SELF_UPDATE=0 ;;
+            --log)     LOG=1 ;;
+            --install-cron) install_cron; exit 0 ;;
+            --probe)   echo "$PROBE_REPLY"; exit 0 ;;   # self-update check; does nothing
             -h|--help) usage; exit 0 ;;
             *) die "Unknown option: $arg (see --help)" ;;
         esac
     done
 
+    ((LOG)) && start_log
     command -v curl >/dev/null || die "curl is required"
+    take_lock
+    self_update "$@"
     if [[ ! -f "$COMPOSE_FILE" && -f "${LEGACY_DIR}/docker-compose.yml" \
           && ! "$LEGACY_DIR" -ef "$COMPOSE_DIR" ]]; then
         MIGRATE=1
@@ -250,6 +405,7 @@ main() {
             ok "Copied docker-compose.yml"
             if [[ -f "${LEGACY_DIR}/.env" && ! -f "${COMPOSE_DIR}/.env" ]]; then
                 cp -p "${LEGACY_DIR}/.env" "${COMPOSE_DIR}/.env"
+                chmod 600 "${COMPOSE_DIR}/.env"    # may hold AGENT_SECRET
                 ok "Copied .env"
             fi
         fi
@@ -266,8 +422,9 @@ main() {
     new="$NEW_FILE"
 
     fetch_compose "$new"
+    resolve_target "$new"
     prev=$(running_version)
-    target=$(file_version "$new")
+    target="$TARGET"
 
     # Probe the IP the new file publishes on (AGENT_HOST overrides).
     if [[ -z "$AGENT_HOST" ]]; then
@@ -281,7 +438,7 @@ main() {
     else
         printf 'Local compose:  %s\n' "$(file_version "$CURRENT_FILE")"
     fi
-    printf 'GitHub compose: %s\n' "${target:-none}"
+    printf 'Target version: %s\n' "$target"
     echo
 
     if ((FIRST_INSTALL)); then
@@ -289,17 +446,17 @@ main() {
     elif cmp -s "$new" "$CURRENT_FILE"; then
         # A move always recreates, so the container joins this directory's project.
         if [[ "$prev" == "$target" ]] && ! ((FORCE || MIGRATE)); then
-            ok "Compose file unchanged and agent already on ${target} — nothing to do"
-            exit 0
+            ok "Compose file unchanged and agent already on ${target} — nothing to change"
+            VERIFY_RETRIES=3
+            verify_agent && exit 0
+            die "Agent is not answering on https://${AGENT_HOST}:${AGENT_PORT}/ping — run with --force to recreate it"
         fi
         info "Compose file unchanged"
     else
-        info "Changes from GitHub:"
-        diff -u --label current --label github "$CURRENT_FILE" "$new" || true
+        info "Changes to apply:"
+        diff -u --label current --label new "$CURRENT_FILE" "$new" || true
         echo
     fi
-
-    check_target_version "$target"
 
     if ((DRY_RUN)); then
         info "Dry run — nothing applied"
@@ -307,7 +464,7 @@ main() {
     fi
 
     if ! ((FIRST_INSTALL)); then
-        bak="${COMPOSE_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
+        bak=$(mktemp "${COMPOSE_FILE}.bak.$(date +%Y%m%d-%H%M%S).XXXX")
         cp "$COMPOSE_FILE" "$bak"
         ok "Compose backed up to $(basename "$bak")"
     fi
@@ -333,6 +490,9 @@ main() {
         echo
         info "Pruning dangling images"
         docker image prune -f
+        # Keep the newest compose backups; names sort by timestamp.
+        ls -1 "${COMPOSE_FILE}".bak.* 2>/dev/null | sort | head -n -"$KEEP_BACKUPS" \
+            | while IFS= read -r f; do rm -f -- "$f"; done || true
         echo
         info "Confirm the endpoint is green in the Portainer UI before walking away."
         if ((MIGRATE)); then
