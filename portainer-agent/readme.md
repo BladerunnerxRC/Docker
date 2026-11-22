@@ -157,35 +157,43 @@ rm -rf ~/docker-compose-scripts/portainer_agent
 No change to this repo is needed. Each host follows its own server, so hosts of different
 servers can run different versions.
 
-To update automatically, add a nightly job to your user's crontab (not root's). Running this
-again replaces the entry instead of adding a second one:
+To update automatically, let the script add a nightly job to your user's crontab (run it as
+yourself, not root):
 
 ```bash
-( crontab -l 2>/dev/null | grep -v sync-portainer-agent.sh
-  echo '17 4 * * * $HOME/portainer-agent/sync-portainer-agent.sh --log'
-) | crontab -
+./sync-portainer-agent.sh --install-cron
+crontab -l     # confirm
 ```
 
-`--log` appends the output to `~/portainer-agent/sync.log`. Once that file passes 512 KB it
-becomes `sync.log.1` and a new one starts, so at most two files are kept. Change the limit with
-`LOG_MAX_KB`. When the agent already matches the server, a run only checks `/ping`. Look for
-`[!]` lines in the log.
+It adds one line ending in `# portainer-agent-sync` (4:17 every night; change it with
+`CRON_SCHEDULE`). Running it again replaces only that line, and your other cron jobs are kept.
+If your crontab can't be read, it stops and changes nothing.
+
+The job uses `--log`, which appends the output to `~/portainer-agent/sync.log`. Once that file
+passes 512 KB it becomes `sync.log.1` and a new one starts, so at most two files are kept.
+Change the limit with `LOG_MAX_KB`. When the agent already matches the server, a run only
+checks `/ping`. Look for `[!]` lines in the log.
 ## sync-portainer-agent.sh
 
 The script runs these steps:
 
-0. Replaces itself with `sync-portainer-agent.sh` from GitHub if that copy differs, then
-   reruns. A failed download or a copy with a syntax error is ignored, and the running copy
-   is used. `--dry-run` only reports that a newer script exists.
-1. Downloads `portainer-agent/docker-compose.yml` from GitHub and validates it with
+1. Takes a lock (`.sync.lock`), so a cron run and a manual run can't overlap. A second run
+   stops with "Another sync is running".
+2. Replaces itself with `sync-portainer-agent.sh` from GitHub if that copy differs, then
+   reruns. The new copy must parse and answer `--probe`. If it doesn't, or the download fails,
+   the running copy is used. The copy it replaces is kept as `sync-portainer-agent.sh.prev`.
+   `--dry-run` only reports that a newer script exists.
+3. Downloads `portainer-agent/docker-compose.yml` from GitHub and validates it with
    `docker compose config`.
-2. Keeps the host's `<lan-ip>:9001:9001` binding from the current compose file.
-3. Reads the Portainer server's version from `/api/status` and sets the image tag to it.
-   Stops if the server can't be reached or the version isn't `X.Y.Z`.
-4. Shows a diff, backs up the current file to `docker-compose.yml.bak.<timestamp>`, pulls the
-   image and recreates the container.
-5. Checks that the agent answers on `/ping` within 30 seconds.
-6. Prunes dangling images, but only after the check passes.
+4. Keeps the host's `<lan-ip>:9001:9001` binding from the current compose file.
+5. Reads the Portainer server's version from `/api/status` and sets the image tag to it. Only
+   a complete HTTP 200 response counts. Stops if there's no version or it isn't `X.Y.Z`, and
+   checks with `docker compose config --images` that the file really runs that image.
+6. Shows a diff, backs up the current file to `docker-compose.yml.bak.<timestamp>.<random>`,
+   pulls the image and recreates the container.
+7. Checks that the agent answers on `/ping` within 30 seconds.
+8. Prunes dangling images and keeps the 5 newest compose backups, but only after the check
+   passes.
 
 If the pull fails, the script restores the compose file and leaves the container untouched. If
 `docker compose up` fails or `/ping` doesn't answer, it restores the backup and recreates the
@@ -201,6 +209,7 @@ so a cron run catches an agent that has stopped working.
 | `--force`   | If the server can't be reached, deploys the template's tag instead of stopping. Recreates even if nothing changed. |
 | `--no-self-update` | Runs this copy of the script without checking GitHub for a newer one. |
 | `--log`     | Appends all output to `sync.log`, rotating it past `LOG_MAX_KB` (512). For cron. |
+| `--install-cron` | Adds or replaces the nightly job in your crontab and keeps other jobs. |
 
 These environment variables override the defaults:
 
@@ -214,6 +223,7 @@ These environment variables override the defaults:
 | `SCRIPT_SRC_PATH`  | `portainer-agent/sync-portainer-agent.sh`     |
 | `LOG_FILE`         | `sync.log` in `COMPOSE_DIR`                   |
 | `LOG_MAX_KB`       | `512`                                         |
+| `CRON_SCHEDULE`    | `17 4 * * *` (used by `--install-cron`)       |
 | `AGENT_HOST`       | the IP from the port binding, or `127.0.0.1`  |
 | `PORTAINER_SERVER` | read from `.env` in `COMPOSE_DIR`             |
 

@@ -63,6 +63,8 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
   template's tag is only the `--force` fallback. Hosts of different servers can differ.
 - **The script updates itself** from `REF` on every run (2026-11-22), so fixes reach the hosts.
   Testing a branch: pass `REF=<branch>`, or the script replaces itself with `main`'s copy.
+  Accepted risk (PR #41 review): the script trusts `main` exactly as the compose template does;
+  branch protection is the control. A new copy must answer `--probe`; the old one is kept as `.prev`.
 - **GitHub is the source of truth for the rest of the compose file.** Editing it on a host is
   pointless — the next sync overwrites it.
 - **Bind the agent to the host's LAN IP**, not `0.0.0.0`. The template keeps a bare `9001:9001`
@@ -89,8 +91,8 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
    someone needs Portainer's host file browser.
 4. **Inventory the rest:** check every other Docker host for an agent and for the old
    `~/docker-compose-scripts/portainer_agent` directory; record which server manages it.
-5. **Nightly cron** on optiplex-three and smiddleware once PR #41 is merged: command in
-   `readme.md` ("Updating to a new version"), using `--log` (capped at 512 KB + one old copy).
+5. **Nightly cron** on optiplex-three and smiddleware once PR #41 is merged:
+   `./sync-portainer-agent.sh --install-cron` (runs with `--log`, capped at 512 KB + one old copy).
 
 ## Improvements offered, not done
 - optiplex-two: firewall port 9000 so only the Traefik host (and sync hosts, if they use the
