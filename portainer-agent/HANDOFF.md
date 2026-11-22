@@ -67,6 +67,8 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
   pointless — the next sync overwrites it.
 - **Bind the agent to the host's LAN IP**, not `0.0.0.0`. The template keeps a bare `9001:9001`
   because the IP differs per host; the script preserves each host's binding.
+- **No `/:/host` mount** (2026-11-22): the host file browser isn't used, and the mount would give
+  the agent the whole host filesystem.
 - **No healthcheck** (scratch image, no shell) and **no Watchtower labels**. Monitor
   `https://<host>:9001/ping` externally (HTTP 204, skip cert validation).
 - **Directory moved** to `~/portainer-agent`. Compose names the project after the directory, so
@@ -82,9 +84,8 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
    `rm -rf ~/docker-compose-scripts/portainer_agent`.
 2. **optiplex-three:** run the sync to go 2.45.2 → 2.45.3. Optionally change its port line to
    `"<lan-ip>:9001:9001"` first, and delete the stale `AGENT_VERSION=` line from `.env`.
-3. **Template decision (open):** keep or drop `- /:/host`. It's only needed for Portainer's host
-   file browser; smiddleware's old file deliberately left it out, and a sync **adds** it.
-   (Log rotation was added to the template on 2026-11-22.)
+3. **Template:** log rotation added and `- /:/host` dropped (2026-11-22). Re-add the mount only if
+   someone needs Portainer's host file browser.
 4. **Inventory the rest:** check every other Docker host for an agent and for the old
    `~/docker-compose-scripts/portainer_agent` directory; record which server manages it.
 5. **Optional:** nightly cron for the sync on each host (example in `readme.md`).

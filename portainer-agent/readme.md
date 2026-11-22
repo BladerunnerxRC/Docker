@@ -32,9 +32,9 @@ on your own machine, because this repo is public.
   endpoint goes offline. Update it on purpose with the sync script.
 - **Log rotation** is set in the template (`json-file`, 3 × 10 MB) so the agent's logs can't
   fill the disk.
-- **`/:/host` gives the agent the whole host filesystem.** Portainer only uses it for the host
-  file browser (Host → Setup → "Enable host management features"). Remove the line from the
-  template if nobody uses that feature. Containers, stacks, volumes and logs don't need it.
+- **No `/:/host` mount.** It would give the agent the whole host filesystem, and Portainer only
+  uses it for the host file browser (Host → Setup → "Enable host management features"), which
+  isn't used here. Containers, stacks, volumes and logs don't need it.
 - **`AGENT_SECRET` is optional.** If you set it in the host's `.env`, the Portainer server
   needs the same secret, or it can't connect.
 
