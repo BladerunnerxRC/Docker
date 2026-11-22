@@ -54,12 +54,6 @@ http:
         servers:
           - url: "http://192.168.200.98:8888"
 
-    nocodb:
-      loadBalancer:
-        passHostHeader: true
-        servers:
-          - url: "http://192.168.200.98:7777"
-
     whoami:
       loadBalancer:
         passHostHeader: true
