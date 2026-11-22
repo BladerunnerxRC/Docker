@@ -205,5 +205,73 @@ Confirm each before acting on it.
 - Housekeeping: fill or remove the README screenshot placeholders; optional summary-table column
   width fix (survey change); review `Dev-Docker` (see Branches).
 
+## Backlog: system manifest for full-server restore (added 2026-11-22)
+**Status:** proposed, not started. **Priority:** high. Prerequisite for a clean-rebuild
+(bare-metal) restore.
+
+**Problem.** Borg archives hold the data and config, but nothing records what the host was:
+installed packages, repos and keys, disk layout, enabled services. A restore onto a fresh OS means
+guessing all of that.
+
+**Enhancement.** A pre-backup hook writes a system manifest (data files, not an install script) to
+`/var/backups/sysmanifest`. Every Borg archive then carries a copy taken at the same moment as its data.
+
+Capture (`sysmanifest.sh`):
+- Identity: `/etc/os-release`, kernel, hostname, boot mode (UEFI/BIOS)
+- APT: `apt-mark showmanual`, `apt-mark showhold`, `dpkg --get-selections`, package versions TSV,
+  foreign architectures, `debconf-get-selections`
+- Repos and keys: tarball of `sources.list*`, `/etc/apt/keyrings`, `trusted.gpg.d`, `preferences.d`,
+  `/usr/share/keyrings`
+- Other package managers: snap, flatpak, pipx, `npm -g`, Docker image list
+- Services: enabled systemd units
+- Storage: `lsblk -f -J`, `blkid`, `sfdisk -d` per disk, fstab/crypttab, LVM (`vgcfgbackup`), mdadm, ZFS
+- Network and firewall: `ip addr` / `ip route`, `nft list ruleset`, `iptables-save`
+- Write to a temp dir and swap it in atomically. Directory mode `0700`: debconf data can contain
+  seeded secrets.
+
+Restore (`restore-packages.sh <manifest>`):
+- Stop if the OS release codename doesn't match the backup
+- Re-add foreign architectures, extract repos and keys, `apt-get update`
+- `debconf-set-selections`
+- Install the manual package list, skipping packages that no longer exist and logging them to
+  `/root/restore-missing-packages.txt`
+- Re-apply holds; reinstall snaps and flatpaks
+- Report drift (packages in the backup that aren't installed now)
+
+Hook wiring:
+- borgmatic 1.x: `before_backup: [/usr/local/sbin/sysmanifest.sh]`
+- borgmatic 2.x: `commands: - before: action / when: [create] / run: [...]`
+- Ensure `/var/backups` is in the source paths
+- *Note (fit with this repo):* these hosts don't use borgmatic; pre-backup runs are Borg UI script
+  entities calling the prep scripts over SSH. Wire it as a call from each
+  `borg-prep-appdata-<host>.sh` (or its own Borg UI script entity). The plans don't necessarily
+  include `/var/backups` (the prep scripts copy rollback copies into the snapshot's `metadata/`
+  instead), so either add it to each plan or write the manifest into `metadata/` too.
+
+Restore order (clean rebuild):
+1. Recreate disks from the sfdisk, LVM and fstab files
+2. Install a minimal OS of the same release
+3. `borg extract var/backups/sysmanifest`, then run `restore-packages.sh`
+4. Restore `/etc` selectively. Check fstab, crypttab, machine-id and network config against the new
+   UUIDs and NIC names.
+5. Restore `/home`, `/root`, `/opt`, `/srv`, `/var/lib/<app>` and `/var/spool/cron`
+6. Restore databases from dumps, not raw data directories
+7. `daemon-reload`, compare enabled units against the manifest, reboot
+
+Gotchas:
+- Export the Borg key (`borg key export`) and store it with the passphrase off-box, or the manifest
+  can't be reached at all
+- Don't pin exact package versions; old versions disappear from the mirrors
+- Schedule a quarterly test restore onto a VM (see open item 5 and the restore drill under Later)
+
+Follow-ups:
+- [ ] Pre-hook for DB dumps (`pg_dumpall`, `mysqldump --single-transaction`) into `/var/backups`
+- [ ] RHEL/Rocky support (`dnf repoquery --userinstalled`, `/etc/yum.repos.d`)
+- [ ] Commit the manifest to a private git repo for a drift history
+- [ ] Longer term: generate Ansible vars from `apt-manual.txt` for a reproducible rebuild
+
+Decision noted: Windows Borg client and borg-ui on Windows dropped. Borg UI stays on the
+Linux/Docker host (optiplex-docker) and is used from a browser.
+
 ## Related
 - [`checkmk/HANDOFF-POC.md`](../checkmk/HANDOFF-POC.md) — steps 11 (backup-age check) and 13 (`checkmk-sites` in Borg).
