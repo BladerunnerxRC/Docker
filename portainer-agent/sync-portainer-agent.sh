@@ -5,13 +5,15 @@
 # Usage:
 #   ./sync-portainer-agent.sh             # fetch, show diff, apply, verify
 #   ./sync-portainer-agent.sh --dry-run   # fetch and show diff only
-#   ./sync-portainer-agent.sh --force     # skip the server-version guard and
-#                                         # recreate even if nothing changed
+#   ./sync-portainer-agent.sh --force     # use the template's tag if the server is
+#                                         # unreachable; recreate even if unchanged
+#
+# Run it after upgrading the Portainer server; the agent follows the server.
 #
 # Behavior:
 #   1. Downloads portainer-agent/docker-compose.yml from GitHub
 #   2. Keeps this host's LAN-IP port binding from the current compose file
-#   3. Refuses a tag that isn't X.Y.Z or doesn't match the Portainer server
+#   3. Sets the image tag to the Portainer server's version (/api/status)
 #   4. Backs up the current file, pulls the image named in the new file,
 #      recreates, waits for /ping
 #   5. Restores the backup and recreates on failure
@@ -41,7 +43,7 @@ REF="${REF:-main}"
 SRC_PATH="${SRC_PATH:-portainer-agent/docker-compose.yml}"
 SRC_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${SRC_PATH}"
 
-# Portainer server — the new tag must match its version. Set it in the
+# Portainer server — the agent is deployed at its version. Set it in the
 # environment or in ${COMPOSE_DIR}/.env (gitignored), e.g.
 #   PORTAINER_SERVER=https://<server-ip>:9443
 if [[ -f "${COMPOSE_DIR}/.env" ]]; then
@@ -57,6 +59,7 @@ VERIFY_INTERVAL=2      # seconds between attempts
 DRY_RUN=0
 FORCE=0
 NEW_FILE=""           # downloaded compose; global so the EXIT trap can clean it up
+TARGET=""             # version to deploy; set by resolve_target
 FIRST_INSTALL=0
 MIGRATE=0
 CURRENT_FILE="$COMPOSE_FILE"   # the host's compose file as it is now; the legacy one in a dry-run move
@@ -184,29 +187,30 @@ fetch_compose() {
         || die "Downloaded compose file is invalid — not applied"
 }
 
-# Refuses tags that aren't X.Y.Z or don't match the server.
-check_target_version() {
-    local target="$1" srv
-
-    [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-        || die "Tag in GitHub compose is '${target}' — must be X.Y.Z (no 'latest' or placeholder)"
+# Sets TARGET to the server's version and writes it into the image tag of $1.
+# Falls back to the template's own tag only with --force.
+resolve_target() {
+    local file="$1" tmpl srv
+    tmpl=$(file_version "$file")
 
     if [[ -z "$PORTAINER_SERVER" ]]; then
-        ((FORCE)) || die "PORTAINER_SERVER not set — add it to ${COMPOSE_DIR}/.env, or use --force"
-        info "PORTAINER_SERVER not set — skipping version guard (--force)"
-        return 0
+        ((FORCE)) || die "PORTAINER_SERVER not set — add it to ${COMPOSE_DIR}/.env, or use --force to deploy the template's ${tmpl}"
+        info "PORTAINER_SERVER not set — using the template's ${tmpl} (--force)"
+        TARGET="$tmpl"
+    else
+        srv=$(server_version)
+        if [[ -n "$srv" ]]; then
+            TARGET="$srv"
+        else
+            ((FORCE)) || die "Could not reach ${PORTAINER_SERVER} — fix it, or use --force to deploy the template's ${tmpl}"
+            info "Server unreachable — using the template's ${tmpl} (--force)"
+            TARGET="$tmpl"
+        fi
     fi
 
-    srv=$(server_version)
-    if [[ -z "$srv" ]]; then
-        ((FORCE)) || die "Could not reach ${PORTAINER_SERVER} — fix it, or use --force"
-        info "Server unreachable — skipping version guard (--force)"
-    elif [[ "$srv" != "$target" ]]; then
-        ((FORCE)) || die "GitHub compose has ${target} but the server runs ${srv} — the endpoint would go offline. Use --force to apply anyway."
-        info "Server runs ${srv}, applying ${target} anyway (--force)"
-    else
-        ok "Target ${target} matches the Portainer server"
-    fi
+    [[ "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+        || die "Version '${TARGET}' is not X.Y.Z — nothing applied"
+    sed -i -E "s|(image:[[:space:]]*portainer/agent:)[^[:space:]]+|\1${TARGET}|" "$file"
 }
 
 # ---------------------------------------------------------------------------
@@ -216,11 +220,13 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [--dry-run] [--force]
 
-  Pulls ${SRC_PATH} from github.com/${REPO} (${REF}),
-  keeps this host's port binding, pulls the image tag it names and recreates.
+  Deploys the agent at the Portainer server's version. Pulls ${SRC_PATH}
+  from github.com/${REPO} (${REF}), keeps this host's port binding, sets the
+  image tag to the server's version, pulls it and recreates.
 
   --dry-run   Show the diff and target version, change nothing
-  --force     Skip the server-version guard; recreate even if unchanged
+  --force     Use the template's tag if the server is unreachable;
+              recreate even if unchanged
 
 Environment: COMPOSE_DIR, LEGACY_DIR, REPO, REF, SRC_PATH, AGENT_HOST, PORTAINER_SERVER
 EOF
@@ -266,8 +272,9 @@ main() {
     new="$NEW_FILE"
 
     fetch_compose "$new"
+    resolve_target "$new"
     prev=$(running_version)
-    target=$(file_version "$new")
+    target="$TARGET"
 
     # Probe the IP the new file publishes on (AGENT_HOST overrides).
     if [[ -z "$AGENT_HOST" ]]; then
@@ -281,7 +288,7 @@ main() {
     else
         printf 'Local compose:  %s\n' "$(file_version "$CURRENT_FILE")"
     fi
-    printf 'GitHub compose: %s\n' "${target:-none}"
+    printf 'Target version: %s\n' "$target"
     echo
 
     if ((FIRST_INSTALL)); then
@@ -294,12 +301,10 @@ main() {
         fi
         info "Compose file unchanged"
     else
-        info "Changes from GitHub:"
-        diff -u --label current --label github "$CURRENT_FILE" "$new" || true
+        info "Changes to apply:"
+        diff -u --label current --label new "$CURRENT_FILE" "$new" || true
         echo
     fi
-
-    check_target_version "$target"
 
     if ((DRY_RUN)); then
         info "Dry run — nothing applied"

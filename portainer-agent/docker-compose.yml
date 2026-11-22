@@ -1,5 +1,7 @@
 services:
   portainer_agent:
+    # The sync script replaces this tag with the Portainer server's version.
+    # It is used only with --force when the server cannot be reached.
     image: portainer/agent:2.45.4
     container_name: portainer_agent
     restart: always

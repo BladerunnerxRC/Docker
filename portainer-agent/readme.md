@@ -7,7 +7,7 @@ This folder has two files:
 
 | File                      | Purpose                                                        |
 |---------------------------|----------------------------------------------------------------|
-| `docker-compose.yml`      | The compose template. Its image tag is the version every host should run. |
+| `docker-compose.yml`      | The compose template. The sync script sets its image tag to the server's version. |
 | `sync-portainer-agent.sh` | Downloads that template from GitHub and redeploys the agent on a host. |
 
 The list of hosts and their IPs is in `HOSTS.local.md`. That file is gitignored and exists only
@@ -15,9 +15,11 @@ on your own machine, because this repo is public.
 
 ## Rules for the compose file
 
-- **Pin the image tag** to the Portainer server's version (`portainer/agent:2.45.2`, never
-  `latest`). If the agent and server versions differ, the handshake fails and the endpoint
-  goes offline in Portainer.
+- **The agent runs the Portainer server's version**, pinned as `X.Y.Z` and never `latest`.
+  If the agent and server versions differ, the handshake fails and the endpoint goes offline
+  in Portainer. The sync script reads the server's version and writes it into the host's
+  compose file. The tag in the template is only a fallback for `--force` when the server
+  can't be reached, so it doesn't need updating after every server upgrade.
 - **Bind the port to the host's LAN IP** on each host (`"<lan-ip>:9001:9001"`). The agent can
   control Docker on the whole host, so it should not listen on every interface. The template
   uses a bare `9001:9001` because the IP is different on every host. The sync script keeps
@@ -44,8 +46,8 @@ curl -fsSLO https://raw.githubusercontent.com/BladerunnerxRC/Docker/main/portain
 chmod 755 sync-portainer-agent.sh
 ```
 
-Create a `.env` file in the same directory. The script needs the server URL to check the
-version. `.env` files are gitignored, and Docker Compose ignores variables it doesn't use.
+Create a `.env` file in the same directory. The script asks this server which agent version
+to deploy, so point it at the server that manages this host. `.env` files are gitignored, and Docker Compose ignores variables it doesn't use.
 
 ```bash
 PORTAINER_SERVER=https://<server-ip>:9443
@@ -136,19 +138,26 @@ rm -rf ~/docker-compose-scripts/portainer_agent
 
 ## Updating to a new version
 
-1. Check the server's version: `curl -sk https://<server-ip>:9443/api/status`.
-2. Change the image tag in this folder's `docker-compose.yml`, then commit and push.
-3. On each host, preview the change, then apply it:
+1. Upgrade the Portainer server in its UI.
+2. On each host that server manages, preview the change, then apply it:
 
    ```bash
+   cd ~/portainer-agent
    ./sync-portainer-agent.sh --dry-run
    ./sync-portainer-agent.sh
    ```
 
-4. Confirm the endpoint is green in the Portainer UI.
+3. Confirm the endpoint is green in the Portainer UI.
 
-`raw.githubusercontent.com` can serve the old file for a few minutes after a push. To get the
-new one straight away, pass the commit SHA: `REF=<sha> ./sync-portainer-agent.sh`.
+No change to this repo is needed. Each host follows its own server, so hosts of different
+servers can run different versions.
+
+To update automatically, run the script from your user's crontab (`crontab -e`). It does
+nothing when the agent already matches the server:
+
+```cron
+17 4 * * * $HOME/portainer-agent/sync-portainer-agent.sh >> $HOME/portainer-agent/sync.log 2>&1
+```
 
 ## sync-portainer-agent.sh
 
@@ -157,7 +166,8 @@ The script runs these steps:
 1. Downloads `portainer-agent/docker-compose.yml` from GitHub and validates it with
    `docker compose config`.
 2. Keeps the host's `<lan-ip>:9001:9001` binding from the current compose file.
-3. Stops unless the tag is `X.Y.Z` and matches the Portainer server version.
+3. Reads the Portainer server's version from `/api/status` and sets the image tag to it.
+   Stops if the server can't be reached or the version isn't `X.Y.Z`.
 4. Shows a diff, backs up the current file to `docker-compose.yml.bak.<timestamp>`, pulls the
    image and recreates the container.
 5. Checks that the agent answers on `/ping` within 30 seconds.
@@ -167,13 +177,13 @@ If the pull fails, the script restores the compose file and leaves the container
 `docker compose up` fails or `/ping` doesn't answer, it restores the backup and recreates the
 container from it. The previous image is still there, because nothing is pruned on failure.
 
-If the compose file hasn't changed and the agent already runs that tag, the script exits
-without touching anything.
+If the compose file hasn't changed and the agent already runs the server's version, the script
+exits without touching anything.
 
 | Option      | Effect                                                              |
 |-------------|---------------------------------------------------------------------|
 | `--dry-run` | Shows the diff and target version. Changes nothing.                 |
-| `--force`   | Skips the server-version check, and recreates even if nothing changed. |
+| `--force`   | If the server can't be reached, deploys the template's tag instead of stopping. Recreates even if nothing changed. |
 
 These environment variables override the defaults:
 

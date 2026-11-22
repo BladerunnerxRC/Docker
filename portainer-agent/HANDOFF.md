@@ -21,12 +21,12 @@ it, deployed from one compose template in this repo, updated on purpose (never `
 Watchtower), and verifiable from outside.
 
 ## How it works now
-- **Template:** [`docker-compose.yml`](docker-compose.yml) on `main`. Its image tag is the version
-  every host should run. Currently `portainer/agent:2.45.4`.
+- **Template:** [`docker-compose.yml`](docker-compose.yml) on `main`. The sync script replaces its
+  image tag with the server's version; the template's tag (`2.45.4`) is only the `--force` fallback.
 - **Deploy/update:** [`sync-portainer-agent.sh`](sync-portainer-agent.sh), run on each host from
   `~/portainer-agent/`. It downloads the template from `main`, keeps the host's
-  `<lan-ip>:9001:9001` binding, refuses a tag that isn't `X.Y.Z` or doesn't match
-  `PORTAINER_SERVER`'s `/api/status`, then pulls, recreates, checks `/ping`, and rolls back on failure.
+  `<lan-ip>:9001:9001` binding, sets the tag to `PORTAINER_SERVER`'s `/api/status` version
+  (must be `X.Y.Z`), then pulls, recreates, checks `/ping`, and rolls back on failure.
 - **Per-host config:** `~/portainer-agent/.env` with `PORTAINER_SERVER` (required) and
   `AGENT_SECRET` (optional). Owner = the user, `.env` mode `600`.
 - **Old layout:** hosts used `~/docker-compose-scripts/portainer_agent/` with
@@ -35,7 +35,8 @@ Watchtower), and verifiable from outside.
   from the old directory on its first run; it never deletes the old directory.
 
 ## Environment
-Two **independent** Portainer Business Edition servers. optiplex-docker is on **2.45.4** (2026-11-22); optiplex-two must be upgraded to match before its hosts can sync.
+Two **independent** Portainer Business Edition servers, both on **2.45.4** (2026-11-22), upgraded
+through the UI. Each host's agent follows its own server, so they don't have to move together.
 
 | Server host | How it's reached | Manages |
 |---|---|---|
@@ -56,9 +57,12 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
 
 ## Decisions made
 - **Pin the tag; never `latest`.** Agent/server version mismatch breaks the handshake and the
-  endpoint goes offline. The script enforces `X.Y.Z` and the server match (`--force` overrides).
-- **GitHub is the source of truth.** Editing the compose file on a host is pointless — the next
-  sync overwrites it. Bump the tag on `main` (via PR), then sync each host.
+  endpoint goes offline. `latest` also leaves no older image to roll back to.
+- **The agent follows its server** (2026-11-22). Servers are upgraded in the UI, so a repo tag
+  kept going stale. The script now takes the version from the server's `/api/status`; the
+  template's tag is only the `--force` fallback. Hosts of different servers can differ.
+- **GitHub is the source of truth for the rest of the compose file.** Editing it on a host is
+  pointless — the next sync overwrites it.
 - **Bind the agent to the host's LAN IP**, not `0.0.0.0`. The template keeps a bare `9001:9001`
   because the IP differs per host; the script preserves each host's binding.
 - **No healthcheck** (scratch image, no shell) and **no Watchtower labels**. Monitor
@@ -83,9 +87,7 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
      old file deliberately left it out, and a sync **adds** it.
 4. **Inventory the rest:** check every other Docker host for an agent and for the old
    `~/docker-compose-scripts/portainer_agent` directory; record which server manages it.
-5. **Shared tag vs two servers:** both servers must be upgraded together, or hosts of the
-   lagging server will refuse to sync. If that becomes a problem, add a per-server tag override
-   to the script (e.g. `AGENT_VERSION` in `.env` taking precedence over the template tag).
+5. **Optional:** nightly cron for the sync on each host (example in `readme.md`).
 
 ## Improvements offered, not done
 - Script: `chmod 600 .env` after copying it from the old directory (`cp -p` keeps the old mode).
