@@ -22,7 +22,7 @@ Watchtower), and verifiable from outside.
 
 ## How it works now
 - **Template:** [`docker-compose.yml`](docker-compose.yml) on `main`. Its image tag is the version
-  every host should run. Currently `portainer/agent:2.45.3`.
+  every host should run. Currently `portainer/agent:2.45.4`.
 - **Deploy/update:** [`sync-portainer-agent.sh`](sync-portainer-agent.sh), run on each host from
   `~/portainer-agent/`. It downloads the template from `main`, keeps the host's
   `<lan-ip>:9001:9001` binding, refuses a tag that isn't `X.Y.Z` or doesn't match
@@ -35,7 +35,7 @@ Watchtower), and verifiable from outside.
   from the old directory on its first run; it never deletes the old directory.
 
 ## Environment
-Two **independent** Portainer Business Edition servers, both on **2.45.3** — intentional.
+Two **independent** Portainer Business Edition servers. optiplex-docker is on **2.45.4** (2026-11-22); optiplex-two must be upgraded to match before its hosts can sync.
 
 | Server host | How it's reached | Manages |
 |---|---|---|
