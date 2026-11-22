@@ -61,6 +61,8 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
 - **The agent follows its server** (2026-11-22). Servers are upgraded in the UI, so a repo tag
   kept going stale. The script now takes the version from the server's `/api/status`; the
   template's tag is only the `--force` fallback. Hosts of different servers can differ.
+- **The script updates itself** from `REF` on every run (2026-11-22), so fixes reach the hosts.
+  Testing a branch: pass `REF=<branch>`, or the script replaces itself with `main`'s copy.
 - **GitHub is the source of truth for the rest of the compose file.** Editing it on a host is
   pointless — the next sync overwrites it.
 - **Bind the agent to the host's LAN IP**, not `0.0.0.0`. The template keeps a bare `9001:9001`
@@ -80,17 +82,14 @@ A host's `PORTAINER_SERVER` must point at the server that lists it as an endpoin
    `rm -rf ~/docker-compose-scripts/portainer_agent`.
 2. **optiplex-three:** run the sync to go 2.45.2 → 2.45.3. Optionally change its port line to
    `"<lan-ip>:9001:9001"` first, and delete the stale `AGENT_VERSION=` line from `.env`.
-3. **Template decisions (open):**
-   - Add a `logging:` block (`json-file`, `max-size: 10m`, `max-file: 3`). smiddleware's old file
-     had it; the template doesn't, so a sync currently **drops log rotation**.
-   - Keep or drop `- /:/host`. It's only needed for Portainer's host file browser; smiddleware's
-     old file deliberately left it out, and a sync **adds** it.
+3. **Template decision (open):** keep or drop `- /:/host`. It's only needed for Portainer's host
+   file browser; smiddleware's old file deliberately left it out, and a sync **adds** it.
+   (Log rotation was added to the template on 2026-11-22.)
 4. **Inventory the rest:** check every other Docker host for an agent and for the old
    `~/docker-compose-scripts/portainer_agent` directory; record which server manages it.
 5. **Optional:** nightly cron for the sync on each host (example in `readme.md`).
 
 ## Improvements offered, not done
-- Script: `chmod 600 .env` after copying it from the old directory (`cp -p` keeps the old mode).
 - optiplex-two: firewall port 9000 so only the Traefik host (and sync hosts, if they use the
   direct URL) can reach it — today anyone on the LAN can bypass Traefik and log in over HTTP.
 - optiplex-two gets its address from DHCP; a reservation would protect Checkmk's agent

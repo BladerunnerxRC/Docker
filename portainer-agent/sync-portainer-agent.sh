@@ -7,10 +7,12 @@
 #   ./sync-portainer-agent.sh --dry-run   # fetch and show diff only
 #   ./sync-portainer-agent.sh --force     # use the template's tag if the server is
 #                                         # unreachable; recreate even if unchanged
+#   ./sync-portainer-agent.sh --no-self-update   # don't replace this script
 #
 # Run it after upgrading the Portainer server; the agent follows the server.
 #
 # Behavior:
+#   0. Replaces itself with the copy on GitHub if that one differs, then reruns
 #   1. Downloads portainer-agent/docker-compose.yml from GitHub
 #   2. Keeps this host's LAN-IP port binding from the current compose file
 #   3. Sets the image tag to the Portainer server's version (/api/status)
@@ -42,6 +44,9 @@ REPO="${REPO:-BladerunnerxRC/Docker}"
 REF="${REF:-main}"
 SRC_PATH="${SRC_PATH:-portainer-agent/docker-compose.yml}"
 SRC_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${SRC_PATH}"
+SCRIPT_SRC_PATH="${SCRIPT_SRC_PATH:-portainer-agent/sync-portainer-agent.sh}"
+SCRIPT_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${SCRIPT_SRC_PATH}"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 
 # Portainer server — the agent is deployed at its version. Set it in the
 # environment or in ${COMPOSE_DIR}/.env (gitignored), e.g.
@@ -58,6 +63,7 @@ VERIFY_INTERVAL=2      # seconds between attempts
 
 DRY_RUN=0
 FORCE=0
+SELF_UPDATE=1
 NEW_FILE=""           # downloaded compose; global so the EXIT trap can clean it up
 TARGET=""             # version to deploy; set by resolve_target
 FIRST_INSTALL=0
@@ -67,8 +73,12 @@ CURRENT_FILE="$COMPOSE_FILE"   # the host's compose file as it is now; the legac
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
-C_RED=$'\033[0;31m'; C_GRN=$'\033[0;32m'
-C_YEL=$'\033[0;33m'; C_RST=$'\033[0m'
+if [[ -t 1 ]]; then        # no colour codes in cron logs
+    C_RED=$'\033[0;31m'; C_GRN=$'\033[0;32m'
+    C_YEL=$'\033[0;33m'; C_RST=$'\033[0m'
+else
+    C_RED=""; C_GRN=""; C_YEL=""; C_RST=""
+fi
 
 info() { printf '%s[*]%s %s\n' "$C_YEL" "$C_RST" "$*"; }
 ok()   { printf '%s[+]%s %s\n' "$C_GRN" "$C_RST" "$*"; }
@@ -214,6 +224,47 @@ resolve_target() {
 }
 
 # ---------------------------------------------------------------------------
+# Self-update
+#
+# Hosts keep a copy of this script, so fixes on GitHub would otherwise never
+# reach them. A failed or invalid download keeps the running copy.
+# ---------------------------------------------------------------------------
+self_update() {
+    local tmp
+    ((SELF_UPDATE)) || return 0
+    [[ -z "${SYNC_SELF_UPDATED:-}" ]] || return 0    # already restarted once
+
+    tmp=$(mktemp "${SCRIPT_PATH}.new.XXXXXX" 2>/dev/null) \
+        || { info "Can't write next to ${SCRIPT_PATH} — skipping script update"; return 0; }
+    if ! curl -fsSL --max-time 15 "$SCRIPT_URL" -o "$tmp"; then
+        rm -f "$tmp"
+        info "Could not check GitHub for a newer script — using this copy"
+        return 0
+    fi
+    sed -i 's/\r$//' "$tmp"
+
+    if cmp -s "$tmp" "$SCRIPT_PATH"; then
+        rm -f "$tmp"
+        return 0
+    fi
+    if [[ ! -s "$tmp" ]] || ! bash -n "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        err "Script on GitHub is empty or has a syntax error — using this copy"
+        return 0
+    fi
+    if ((DRY_RUN)); then
+        rm -f "$tmp"
+        info "A newer script is on GitHub — a run without --dry-run installs it first"
+        return 0
+    fi
+
+    chmod 755 "$tmp"
+    mv -f "$tmp" "$SCRIPT_PATH"
+    ok "Updated $(basename "$SCRIPT_PATH") from GitHub — restarting it"
+    SYNC_SELF_UPDATED=1 exec "$SCRIPT_PATH" "$@"
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 usage() {
@@ -224,11 +275,13 @@ Usage: $(basename "$0") [--dry-run] [--force]
   from github.com/${REPO} (${REF}), keeps this host's port binding, sets the
   image tag to the server's version, pulls it and recreates.
 
-  --dry-run   Show the diff and target version, change nothing
-  --force     Use the template's tag if the server is unreachable;
-              recreate even if unchanged
+  --dry-run          Show the diff and target version, change nothing
+  --force            Use the template's tag if the server is unreachable;
+                     recreate even if unchanged
+  --no-self-update   Don't replace this script with the copy on GitHub
 
-Environment: COMPOSE_DIR, LEGACY_DIR, REPO, REF, SRC_PATH, AGENT_HOST, PORTAINER_SERVER
+Environment: COMPOSE_DIR, LEGACY_DIR, REPO, REF, SRC_PATH, SCRIPT_SRC_PATH,
+             AGENT_HOST, PORTAINER_SERVER
 EOF
 }
 
@@ -238,12 +291,14 @@ main() {
         case "$arg" in
             --dry-run) DRY_RUN=1 ;;
             --force)   FORCE=1 ;;
+            --no-self-update) SELF_UPDATE=0 ;;
             -h|--help) usage; exit 0 ;;
             *) die "Unknown option: $arg (see --help)" ;;
         esac
     done
 
     command -v curl >/dev/null || die "curl is required"
+    self_update "$@"
     if [[ ! -f "$COMPOSE_FILE" && -f "${LEGACY_DIR}/docker-compose.yml" \
           && ! "$LEGACY_DIR" -ef "$COMPOSE_DIR" ]]; then
         MIGRATE=1
@@ -256,6 +311,7 @@ main() {
             ok "Copied docker-compose.yml"
             if [[ -f "${LEGACY_DIR}/.env" && ! -f "${COMPOSE_DIR}/.env" ]]; then
                 cp -p "${LEGACY_DIR}/.env" "${COMPOSE_DIR}/.env"
+                chmod 600 "${COMPOSE_DIR}/.env"    # may hold AGENT_SECRET
                 ok "Copied .env"
             fi
         fi
@@ -296,8 +352,10 @@ main() {
     elif cmp -s "$new" "$CURRENT_FILE"; then
         # A move always recreates, so the container joins this directory's project.
         if [[ "$prev" == "$target" ]] && ! ((FORCE || MIGRATE)); then
-            ok "Compose file unchanged and agent already on ${target} — nothing to do"
-            exit 0
+            ok "Compose file unchanged and agent already on ${target} — nothing to change"
+            VERIFY_RETRIES=3
+            verify_agent && exit 0
+            die "Agent is not answering on https://${AGENT_HOST}:${AGENT_PORT}/ping — run with --force to recreate it"
         fi
         info "Compose file unchanged"
     else

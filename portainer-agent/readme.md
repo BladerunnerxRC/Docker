@@ -30,6 +30,11 @@ on your own machine, because this repo is public.
   skip certificate validation.
 - **Leave out Watchtower labels.** If Watchtower updates the agent ahead of the server, the
   endpoint goes offline. Update it on purpose with the sync script.
+- **Log rotation** is set in the template (`json-file`, 3 × 10 MB) so the agent's logs can't
+  fill the disk.
+- **`/:/host` gives the agent the whole host filesystem.** Portainer only uses it for the host
+  file browser (Host → Setup → "Enable host management features"). Remove the line from the
+  template if nobody uses that feature. Containers, stacks, volumes and logs don't need it.
 - **`AGENT_SECRET` is optional.** If you set it in the host's `.env`, the Portainer server
   needs the same secret, or it can't connect.
 
@@ -163,6 +168,9 @@ nothing when the agent already matches the server:
 
 The script runs these steps:
 
+0. Replaces itself with `sync-portainer-agent.sh` from GitHub if that copy differs, then
+   reruns. A failed download or a copy with a syntax error is ignored, and the running copy
+   is used. `--dry-run` only reports that a newer script exists.
 1. Downloads `portainer-agent/docker-compose.yml` from GitHub and validates it with
    `docker compose config`.
 2. Keeps the host's `<lan-ip>:9001:9001` binding from the current compose file.
@@ -178,12 +186,14 @@ If the pull fails, the script restores the compose file and leaves the container
 container from it. The previous image is still there, because nothing is pruned on failure.
 
 If the compose file hasn't changed and the agent already runs the server's version, the script
-exits without touching anything.
+changes nothing. It still checks `/ping`, and exits with an error if the agent isn't answering,
+so a cron run catches an agent that has stopped working.
 
 | Option      | Effect                                                              |
 |-------------|---------------------------------------------------------------------|
 | `--dry-run` | Shows the diff and target version. Changes nothing.                 |
 | `--force`   | If the server can't be reached, deploys the template's tag instead of stopping. Recreates even if nothing changed. |
+| `--no-self-update` | Runs this copy of the script without checking GitHub for a newer one. |
 
 These environment variables override the defaults:
 
@@ -194,6 +204,7 @@ These environment variables override the defaults:
 | `REPO`             | `BladerunnerxRC/Docker`                       |
 | `REF`              | `main` (a branch, tag or commit SHA)          |
 | `SRC_PATH`         | `portainer-agent/docker-compose.yml`          |
+| `SCRIPT_SRC_PATH`  | `portainer-agent/sync-portainer-agent.sh`     |
 | `AGENT_HOST`       | the IP from the port binding, or `127.0.0.1`  |
 | `PORTAINER_SERVER` | read from `.env` in `COMPOSE_DIR`             |
 
